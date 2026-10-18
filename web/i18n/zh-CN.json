@@ -61,7 +61,7 @@
   "act.reboot": "重启设备",
   "p.password": "控制台密码",
   "pw.old": "原密码",
-  "pw.new": "新密码（至少 6 位）",
+  "pw.new": "新密码（至少 5 位）",
   "pw.again": "再输一次",
   "act.save": "保存",
   "pw.mismatch": "两次输入的新密码不一样",

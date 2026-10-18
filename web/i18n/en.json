@@ -61,7 +61,7 @@
   "act.reboot": "Reboot device",
   "p.password": "console password",
   "pw.old": "Current password",
-  "pw.new": "New password (min. 6 characters)",
+  "pw.new": "New password (min. 5 characters)",
   "pw.again": "Repeat new password",
   "act.save": "Save",
   "pw.mismatch": "New passwords don't match",

@@ -17,10 +17,12 @@ import (
 )
 
 const (
-	pbkdf2Iter     = 60000 // about 0.1 s on a ZTE F50
-	sessionCookie  = "glovebox_session"
-	sessionTTL     = 30 * 24 * time.Hour // long-lived: in-car screens shouldn't keep asking
-	minPasswordLen = 6
+	pbkdf2Iter    = 60000 // about 0.1 s on a ZTE F50
+	sessionCookie = "glovebox_session"
+	sessionTTL    = 30 * 24 * time.Hour // long-lived: in-car screens shouldn't keep asking
+	// Five characters keeps the console compatible with the requested legacy
+	// "admin" password while retaining a basic minimum-length guard.
+	minPasswordLen = 5
 )
 
 func errPasswordShort() error {
