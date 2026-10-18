@@ -277,7 +277,11 @@ func (s *server) applyXiaomiRouter(ctx context.Context, action string, args ...s
 	c := s.cfg.get()
 	cmdArgs := []string{filepath.Join(c.TurboDir, "scripts/wifi_turbo.sh"), action}
 	cmdArgs = append(cmdArgs, args...)
-	out, err := run(ctx, 60*time.Second, "/system/bin/sh", cmdArgs...)
+	// Hotspot and USB initialization should not hold the console startup path for
+	// a full minute. The controller has its own bounded retries, so 35 seconds is
+	// enough for the normal HyperOS boot while still returning control promptly
+	// when the modem or USB gadget is unavailable.
+	out, err := run(ctx, 35*time.Second, "/system/bin/sh", cmdArgs...)
 	if err != nil {
 		return fmt.Errorf("Android tethering %s: %w: %s", action, err, strings.TrimSpace(out))
 	}
