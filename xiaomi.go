@@ -287,6 +287,12 @@ func (s *server) applyXiaomiRouter(ctx context.Context, action string, args ...s
 
 func (s *server) bootXiaomiRouter(ctx context.Context) {
 	c := s.cfg.get()
+	// Keep the shell lifecycle guard's policy synchronized even when this boot
+	// was already initialized and the server is only being upgraded/restarted.
+	policy := filepath.Join(c.TurboDir, "state/auto_hotspot")
+	if err := os.WriteFile(policy, []byte(boolFlag(c.AutoStartHotspot)+"\n"), 0600); err != nil {
+		log.Printf("write hotspot auto-start policy: %v", err)
+	}
 	// The Magisk supervisor can restart Glovebox during an upgrade or after a
 	// crash. Auto-start belongs to the Android boot lifecycle, not every server
 	// process start: reapplying a SoftApConfiguration can briefly drop clients.

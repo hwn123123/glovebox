@@ -859,7 +859,8 @@ function renderWiFi(d) {
   if (d.turbo) {
     const x = d.turbo;
     const freq = x.frequency ? `${x.frequency} MHz${x.channel ? ` · CH ${x.channel}` : ''}` : '—';
-    html += `<article class="panel s12 turbo-card"><header class="ph"><span class="pi">⚡</span><h2>AP TURBO</h2><span class="sub">${t('turbo.summary')}</span><div class="pa"><span class="tag ${x.active ? 'ok' : x.enabled ? 'warn' : ''}">${x.active ? 'ACTIVE' : x.enabled ? 'STANDBY' : 'OFF'}</span></div></header><div class="pb"><div class="kv-grid"><div><span class="dim">${t('turbo.profile')}</span><b>${x.enabled ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('turbo.hotspotState')}</span><b>${x.active ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('turbo.interface')}</span><b>${esc(x.interface || '—')}</b></div><div><span class="dim">${t('turbo.address')}</span><b>${esc(x.fixed_address || '—')}</b></div><div><span class="dim">${t('turbo.standard')}</span><b>${esc(wifiStandard(x.standard))}${x.ax ? ' · AX' : ''}${x.be ? ' · BE' : ''}</b></div><div><span class="dim">${t('wifi.frequency')}</span><b>${esc(freq)}</b></div><div><span class="dim">BSSID</span><b>${esc(x.bssid || '—')}</b></div><div><span class="dim">${t('wifi.max')}</span><b>${esc((d.aps[0] || {}).max_clients || '—')}</b></div><div><span class="dim">${t('turbo.offload')}</span><b>${x.offload ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('turbo.country')}</span><b>${esc(x.country || '—')}</b></div></div><div class="actions"><button class="btn ${x.enabled ? '' : 'pri'}" data-turbo="${x.enabled ? 0 : 1}">${x.enabled ? t('turbo.disable') : t('turbo.enable')}</button><span class="note">${t('turbo.note')}</span></div></div></article>`;
+    const runtimeLabel = x.active ? t('turbo.runtimeOn') : t('turbo.runtimeOff');
+    html += `<article class="panel s12 turbo-card"><header class="ph"><span class="pi">⚡</span><h2>AP TURBO</h2><span class="sub">${t('turbo.summary')}</span><div class="pa"><span class="tag ${x.active ? 'ok' : 'bad'}">${runtimeLabel}</span></div></header><div class="pb"><div class="kv-grid"><div><span class="dim">${t('turbo.profile')}</span><b>${x.enabled ? t('state.enabled') : t('state.disabled')}</b></div><div><span class="dim">${t('turbo.hotspotState')}</span><b>${runtimeLabel}</b></div><div><span class="dim">${t('turbo.interface')}</span><b>${esc(x.interface || '—')}</b></div><div><span class="dim">${t('turbo.address')}</span><b>${esc(x.fixed_address || '—')}</b></div><div><span class="dim">${t('turbo.standard')}</span><b>${esc(wifiStandard(x.standard))}${x.ax ? ' · AX' : ''}${x.be ? ' · BE' : ''}</b></div><div><span class="dim">${t('wifi.frequency')}</span><b>${esc(freq)}</b></div><div><span class="dim">BSSID</span><b>${esc(x.bssid || '—')}</b></div><div><span class="dim">${t('wifi.max')}</span><b>${esc((d.aps[0] || {}).max_clients || '—')}</b></div><div><span class="dim">${t('turbo.offload')}</span><b>${x.offload ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('turbo.country')}</span><b>${esc(x.country || '—')}</b></div></div><div class="actions"><button class="btn ${x.enabled ? '' : 'pri'}" data-turbo="${x.enabled ? 0 : 1}">${x.enabled ? t('turbo.disable') : t('turbo.enable')}</button><span class="note">${t('turbo.note')}</span></div></div></article>`;
   }
   if (d.usb) {
     const u = d.usb;
@@ -879,7 +880,8 @@ function renderWiFi(d) {
     return `<form class="panel wifi-form${xiaomi ? ' xiaomi' : ''}" data-chip="${esc(ap.chip)}" data-enabled="${ap.enabled ? 1 : 0}" data-band="${esc(ap.band)}" data-max="${cur}">
       <header class="ph"><span class="pi">${xiaomi ? 'AP' : ap.chip === '1' ? '5G' : '2.4'}</span><h2>${xiaomi ? t('wifi.systemHotspot') : `WLAN · ${esc(ap.band)}`}</h2><span class="sub">${xiaomi ? t('wifi.systemManaged') : ''}</span><div class="pa"><span class="tag ${ap.enabled ? 'ok' : ''}">${ap.enabled ? 'ON' : 'OFF'}</span></div></header>
       <div class="pb">
-        <label class="field switch"><span class="lbl">${t(xiaomi ? 'wifi.hotspotEnabled' : 'wifi.enabled')}</span><input type="checkbox" name="enabled" ${ap.enabled ? 'checked' : ''}><span class="sw"></span></label>
+        <label class="field switch"><span class="lbl">${t(xiaomi ? 'wifi.hotspotRuntime' : 'wifi.enabled')}</span><input type="checkbox" name="enabled" ${ap.enabled ? 'checked' : ''}><span class="sw"></span></label>
+        ${xiaomi ? `<label class="field switch"><span class="lbl">${t('wifi.autoRestore')}</span><input type="checkbox" name="autoStart" ${ap.auto_start ? 'checked' : ''}><span class="sw"></span></label>` : ''}
         <label class="field switch"><span class="lbl">${t('wifi.hidden')}</span><input type="checkbox" name="hidden" ${ap.hidden ? 'checked' : ''}><span class="sw"></span></label>
         <label class="field"><span class="lbl">${t('wifi.ssid')}</span><input type="text" name="ssid" value="${esc(ap.ssid)}" maxlength="32" autocomplete="off" spellcheck="false"></label>
         <div class="field"><span class="lbl">${t('wifi.password')}</span><div class="pw-row">
@@ -935,6 +937,7 @@ $('#wifi').addEventListener('submit', async (ev) => {
   const body = {
     chip: f.dataset.chip,
     enabled: f.enabled.checked,
+    auto_start: f.autoStart ? f.autoStart.checked : f.enabled.checked,
     ssid: f.ssid.value.trim(),
     password: f.password.value,
     hidden: f.hidden.checked,

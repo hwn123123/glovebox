@@ -9,6 +9,8 @@ DAEMON_PID_FILE="$STATE_DIR/daemon.pid"
 DAEMON_LOCK="$STATE_DIR/daemon.lock"
 WEB_PID_FILE="$STATE_DIR/web.pid"
 LAST_APPLY_FILE="$STATE_DIR/last_apply"
+AUTO_HOTSPOT_FILE="$STATE_DIR/auto_hotspot"
+AIRPLANE_PENDING_FILE="$STATE_DIR/airplane_restore_pending"
 ROUTER_BSSID_FILE="$STATE_DIR/router_bssid"
 SOFTAP_BACKUP="$STATE_DIR/softap_config.backup"
 SETTINGS_BACKUP="$STATE_DIR/settings.backup"
@@ -33,6 +35,25 @@ log_msg() {
 
 get_turbo_status() {
     [ -f "$STATUS_FILE" ] && cat "$STATUS_FILE" || echo 1
+}
+
+get_auto_hotspot() {
+    [ -f "$AUTO_HOTSPOT_FILE" ] && cat "$AUTO_HOTSPOT_FILE" || echo 0
+}
+
+get_airplane_mode() {
+    airplane=$(settings get global airplane_mode_on 2>/dev/null)
+    [ "$airplane" = "1" ] && echo 1 || echo 0
+}
+
+set_auto_hotspot() {
+    if [ "$1" = "1" ]; then
+        echo 1 > "$AUTO_HOTSPOT_FILE"
+        [ "$(get_airplane_mode)" = "1" ] && echo 1 > "$AIRPLANE_PENDING_FILE"
+    else
+        echo 0 > "$AUTO_HOTSPOT_FILE"
+        rm -f "$AIRPLANE_PENDING_FILE"
+    fi
 }
 
 cache_value() {
@@ -431,9 +452,30 @@ daemon_loop() {
     log_msg "lifecycle guard started"
     trap '[ "$(cat "$DAEMON_PID_FILE" 2>/dev/null)" = "$$" ] && rm -f "$DAEMON_PID_FILE"; exit 0' TERM INT EXIT
     mismatch_count=0
+    last_airplane=$(get_airplane_mode)
+    recovery_retry_at=0
+    if [ "$last_airplane" = "1" ] && [ "$(get_auto_hotspot)" = "1" ]; then
+        echo 1 > "$AIRPLANE_PENDING_FILE"
+    fi
     while true; do
         refresh_runtime_cache
         iface=$(get_ap_iface)
+        airplane=$(get_airplane_mode)
+        if [ "$airplane" = "1" ]; then
+            if [ "$last_airplane" != "1" ]; then
+                log_msg "airplane mode enabled; waiting for Android to stop the hotspot"
+            fi
+            [ "$(get_auto_hotspot)" = "1" ] && echo 1 > "$AIRPLANE_PENDING_FILE"
+        elif [ "$last_airplane" = "1" ]; then
+            if [ "$(get_auto_hotspot)" = "1" ]; then
+                echo 1 > "$AIRPLANE_PENDING_FILE"
+                recovery_retry_at=0
+                log_msg "airplane mode disabled; hotspot recovery scheduled"
+            else
+                rm -f "$AIRPLANE_PENDING_FILE"
+            fi
+        fi
+        last_airplane="$airplane"
         if [ -n "$iface" ]; then
             setup_web_endpoint
             router_needs_apply=0
@@ -470,6 +512,21 @@ daemon_loop() {
             fi
         else
             stop_webui
+        fi
+        if [ "$airplane" = "0" ] && [ -f "$AIRPLANE_PENDING_FILE" ]; then
+            if [ "$(get_auto_hotspot)" != "1" ]; then
+                rm -f "$AIRPLANE_PENDING_FILE"
+            elif [ -n "$iface" ]; then
+                rm -f "$AIRPLANE_PENDING_FILE"
+                log_msg "hotspot recovered after airplane mode on $iface"
+            else
+                now=$(date +%s)
+                if [ $((now - recovery_retry_at)) -ge 8 ]; then
+                    recovery_retry_at=$now
+                    log_msg "requesting Android hotspot recovery after airplane mode"
+                    run_softap_helper start-wifi "" >> "$LOG_FILE" 2>&1 || true
+                fi
+            fi
         fi
         # USB can be unplugged and recreated independently of the hotspot.
         # Restore only its management alias/route; never restart Wi-Fi here.
@@ -521,6 +578,8 @@ set_hotspot() {
     ssid="$2"
     password="$3"
     hidden="$4"
+    auto_hotspot="${5:-$enabled}"
+    set_auto_hotspot "$auto_hotspot"
     configure_hotspot "$ssid" "$password" "$hidden"
     if [ "$enabled" = "1" ]; then
         run_softap_helper start-wifi ""
@@ -585,6 +644,7 @@ boot_router() {
     hidden="$3"
     auto_hotspot="$4"
     auto_usb="$5"
+    set_auto_hotspot "$auto_hotspot"
     configure_hotspot "$ssid" "$password" "$hidden"
     [ "$auto_hotspot" = "1" ] && run_softap_helper start-wifi "" || true
     if [ "$auto_usb" = "1" ]; then
@@ -626,6 +686,7 @@ print_status() {
 
 cleanup_all() {
     echo 0 > "$STATUS_FILE"
+    set_auto_hotspot 0
     stop_daemon
     run_softap_helper restore "" || true
     restore_settings
@@ -638,7 +699,7 @@ case "$1" in
     off|disable) disable_turbo ;;
     status) print_status ;;
     webui) setup_web_endpoint && echo "WebUI: http://$WEB_IP/" ;;
-    wifi) set_hotspot "$2" "$3" "$4" "$5" ;;
+    wifi) set_hotspot "$2" "$3" "$4" "$5" "$6" ;;
     usb) set_usb_tether "$2" ;;
     boot) boot_router "$2" "$3" "$4" "$5" "$6" ;;
     daemon) daemon_loop ;;

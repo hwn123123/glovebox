@@ -47,6 +47,7 @@ type apInfo struct {
 	Chip      string `json:"chip"`
 	Band      string `json:"band"`
 	Enabled   bool   `json:"enabled"`
+	AutoStart bool   `json:"auto_start"`
 	SSID      string `json:"ssid"`
 	Password  string `json:"password"`
 	AuthMode  string `json:"auth_mode"`
@@ -91,7 +92,7 @@ func (s *server) handleWiFi(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"aps": []apInfo{{Chip: "xiaomi", Band: "Wi-Fi hotspot",
-				Enabled: runtime["AP_IFACE"] != "", SSID: c.HotspotSSID,
+				Enabled: runtime["AP_IFACE"] != "", AutoStart: c.AutoStartHotspot, SSID: c.HotspotSSID,
 				Password: c.HotspotPassword, AuthMode: "WPA2-PSK",
 				Hidden: c.HotspotHidden, MaxClient: max, MaxEdit: false, Editable: true}},
 			"max_supported": 32, "turbo": s.turboStatus(),
@@ -127,11 +128,12 @@ func (s *server) handleWiFi(w http.ResponseWriter, r *http.Request) {
 // what the vendor web UI sends (setAccessPointInfo in its service.js).
 func (s *server) handleSetWiFi(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Chip     string `json:"chip"`
-		Enabled  bool   `json:"enabled"`
-		SSID     string `json:"ssid"`
-		Password string `json:"password"`
-		Hidden   bool   `json:"hidden"`
+		Chip      string `json:"chip"`
+		Enabled   bool   `json:"enabled"`
+		AutoStart *bool  `json:"auto_start"`
+		SSID      string `json:"ssid"`
+		Password  string `json:"password"`
+		Hidden    bool   `json:"hidden"`
 		// 0 means unchanged
 		MaxClients int `json:"max_clients"`
 	}
@@ -156,11 +158,15 @@ func (s *server) handleSetWiFi(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, apiErr("max_clients_range", "Xiaomi router profile uses 32 clients", "max", 32))
 			return
 		}
+		autoStart := in.Enabled
+		if in.AutoStart != nil {
+			autoStart = *in.AutoStart
+		}
 		if err := s.cfg.update(func(c *Config) {
 			c.HotspotSSID = in.SSID
 			c.HotspotPassword = in.Password
 			c.HotspotHidden = in.Hidden
-			c.AutoStartHotspot = in.Enabled
+			c.AutoStartHotspot = autoStart
 		}); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
@@ -171,11 +177,11 @@ func (s *server) handleSetWiFi(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := startDetached("/system/bin/sh", filepath.Join(c.TurboDir, "scripts/wifi_turbo.sh"),
-			"wifi", boolFlag(in.Enabled), in.SSID, in.Password, boolFlag(in.Hidden)); err != nil {
+			"wifi", boolFlag(in.Enabled), in.SSID, in.Password, boolFlag(in.Hidden), boolFlag(autoStart)); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		log.Printf("Android hotspot enabled=%v ssid=%q hidden=%v", in.Enabled, in.SSID, in.Hidden)
+		log.Printf("Android hotspot enabled=%v auto-start=%v ssid=%q hidden=%v", in.Enabled, autoStart, in.SSID, in.Hidden)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		return
 	}
