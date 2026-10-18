@@ -77,6 +77,14 @@ cp -f $tmp/bin/glovebox \$MOD/bin/glovebox.new
 chmod 755 \$MOD/bin/glovebox.new \$MOD/service.sh
 mv -f \$MOD/bin/glovebox.new \$MOD/bin/glovebox
 chown -R 0:0 \$MOD
+# Reload the lifecycle guard after replacing its shell script.  An existing
+# daemon process keeps the old script in memory, so leaving it alive would
+# postpone USB reconnect recovery until the next phone reboot.
+if [ -f \$MOD/state/daemon.pid ]; then
+  old_daemon_pid=\$(cat \$MOD/state/daemon.pid 2>/dev/null || true)
+  [ -n "\$old_daemon_pid" ] && kill "\$old_daemon_pid" 2>/dev/null || true
+  rm -f \$MOD/state/daemon.pid
+fi
 # Migrate the prior AP Turbo module in-place. Keep its backups and selected mode, but
 # let the integrated controller own the fixed address and port 80.
 OLD=/data/adb/modules/wifi_ap_turbo

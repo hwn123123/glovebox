@@ -297,6 +297,10 @@ func (s *server) bootXiaomiRouter(ctx context.Context) {
 	if err := os.WriteFile(policy, []byte(boolFlag(c.AutoStartHotspot)+"\n"), 0600); err != nil {
 		log.Printf("write hotspot auto-start policy: %v", err)
 	}
+	usbPolicy := filepath.Join(c.TurboDir, "state/auto_usb")
+	if err := os.WriteFile(usbPolicy, []byte(boolFlag(c.AutoStartUSBTether)+"\n"), 0600); err != nil {
+		log.Printf("write USB auto-start policy: %v", err)
+	}
 	// The Magisk supervisor can restart Glovebox during an upgrade or after a
 	// crash. Auto-start belongs to the Android boot lifecycle, not every server
 	// process start: reapplying a SoftApConfiguration can briefly drop clients.
@@ -305,8 +309,54 @@ func (s *server) bootXiaomiRouter(ctx context.Context) {
 	bootID := readTrim("/proc/sys/kernel/random/boot_id")
 	marker := filepath.Join(c.TurboDir, "state/router_boot_id")
 	if bootID != "" && readTrim(marker) == bootID {
-		log.Printf("Android tethering already initialized for this boot")
-		return
+		// A Glovebox upgrade/restart can happen after Android's first USB
+		// tether request failed.  The boot marker must not turn that transient
+		// failure into a permanent one for the rest of the boot.  Check the
+		// actual interface and retry USB by itself; do not reapply the SoftAP
+		// configuration when Wi-Fi is already running.
+		runtime := readKV(filepath.Join(c.TurboDir, "state/runtime.status"))
+		apReady := runtime["AP_IFACE"] != ""
+		usbReady := !c.AutoStartUSBTether
+		if c.AutoStartUSBTether {
+			usb := s.xiaomiUSBStatus(ctx)
+			usbReady, _ = usb["active"].(bool)
+			if !usbReady {
+				connected, _ := usb["connected"].(bool)
+				if connected {
+					log.Printf("Android USB tethering is not active after boot; retrying USB without resetting Wi-Fi")
+					for attempt := 1; attempt <= 3; attempt++ {
+						if err := s.applyXiaomiRouter(ctx, "usb", "1"); err != nil {
+							log.Printf("USB recovery attempt %d/3: %v", attempt, err)
+						} else {
+							status := s.xiaomiUSBStatus(ctx)
+							usbReady, _ = status["active"].(bool)
+							if usbReady {
+								break
+							}
+						}
+						if attempt < 3 {
+							timer := time.NewTimer(time.Duration(attempt*5) * time.Second)
+							select {
+							case <-ctx.Done():
+								timer.Stop()
+								return
+							case <-timer.C:
+							}
+						}
+					}
+				} else {
+					log.Printf("USB tethering recovery deferred: no USB link reported by Android")
+				}
+			}
+		}
+		if (!c.AutoStartHotspot || apReady) && usbReady {
+			log.Printf("Android tethering already initialized for this boot")
+			return
+		}
+		if apReady && c.AutoStartUSBTether && !usbReady {
+			// Wi-Fi is healthy; avoid a second full boot pass after USB retries.
+			return
+		}
 	}
 	for attempt := 1; attempt <= 3; attempt++ {
 		err := s.applyXiaomiRouter(ctx, "boot", c.HotspotSSID, c.HotspotPassword,

@@ -26,6 +26,7 @@ TURBO_COUNTRY_CODE="US"
 LOG_FILE="$STATE_DIR/daemon.log"
 RUNTIME_CACHE="$STATE_DIR/runtime.status"
 USB_FUNCTION_FILE="$STATE_DIR/usb_functions"
+AUTO_USB_FILE="$STATE_DIR/auto_usb"
 
 [ -x "$BUSYBOX" ] || BUSYBOX="busybox"
 mkdir -p "$STATE_DIR"
@@ -42,9 +43,27 @@ get_auto_hotspot() {
     [ -f "$AUTO_HOTSPOT_FILE" ] && cat "$AUTO_HOTSPOT_FILE" || echo 0
 }
 
+get_auto_usb() {
+    [ -f "$AUTO_USB_FILE" ] && cat "$AUTO_USB_FILE" || echo 0
+}
+
+set_auto_usb() {
+    if [ "$1" = "1" ]; then
+        echo 1 > "$AUTO_USB_FILE"
+    else
+        echo 0 > "$AUTO_USB_FILE"
+    fi
+}
+
 get_airplane_mode() {
     airplane=$(settings get global airplane_mode_on 2>/dev/null)
     [ "$airplane" = "1" ] && echo 1 || echo 0
+}
+
+usb_link_connected() {
+    dumpsys usb 2>/dev/null | grep -Eiq '(^|[[:space:]])connected=true([[:space:]]|$)' && return 0
+    state=$(cat /sys/class/android_usb/android0/state 2>/dev/null)
+    [ "$state" = "CONNECTED" ] || [ "$state" = "CONFIGURED" ]
 }
 
 set_auto_hotspot() {
@@ -455,6 +474,7 @@ daemon_loop() {
     mismatch_count=0
     last_airplane=$(get_airplane_mode)
     recovery_retry_at=0
+    usb_retry_at=0
     if [ "$last_airplane" = "1" ] && [ "$(get_auto_hotspot)" = "1" ]; then
         echo 1 > "$AIRPLANE_PENDING_FILE"
     fi
@@ -532,6 +552,23 @@ daemon_loop() {
         # USB can be unplugged and recreated independently of the hotspot.
         # Restore only its management alias/route; never restart Wi-Fi here.
         maintain_usb_web_endpoint >/dev/null 2>&1 || true
+        # HyperOS may leave the USB gadget at adb after a cable reconnect or
+        # after NetworkStack rejected the first tether request.  Retry only
+        # the USB path when the policy is enabled and Android reports a link.
+        if [ "$(get_auto_usb)" = "1" ] && [ -z "$(get_usb_iface)" ] \
+            && usb_link_connected; then
+            now=$(date +%s)
+            if [ $((now - usb_retry_at)) -ge 20 ]; then
+                usb_retry_at=$now
+                log_msg "USB link detected without tether interface; recovering USB tether"
+                capture_usb_function
+                run_softap_helper start-usb "" >> "$LOG_FILE" 2>&1 || true
+                if ! setup_usb_web_endpoint 6; then
+                    force_usb_gadget
+                    setup_usb_web_endpoint 20 || true
+                fi
+            fi
+        fi
         sleep 4
     done
 }
@@ -594,6 +631,7 @@ set_hotspot() {
 }
 
 set_usb_tether() {
+    set_auto_usb "$1"
     if [ "$1" = "1" ]; then
         capture_usb_function
         # NetworkStack normally selects the function through the Xiaomi overlay.
@@ -687,6 +725,7 @@ boot_router() {
     auto_hotspot="$4"
     auto_usb="$5"
     set_auto_hotspot "$auto_hotspot"
+    set_auto_usb "$auto_usb"
     configure_hotspot "$ssid" "$password" "$hidden"
     [ "$auto_hotspot" = "1" ] && run_softap_helper start-wifi "" || true
     if [ "$auto_usb" = "1" ]; then
@@ -733,6 +772,7 @@ print_status() {
 cleanup_all() {
     echo 0 > "$STATUS_FILE"
     set_auto_hotspot 0
+    set_auto_usb 0
     stop_daemon
     run_softap_helper stop-usb "" || true
     restore_usb_function
