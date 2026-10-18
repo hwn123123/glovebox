@@ -3,4 +3,4 @@ name=Glovebox
 version=dev
 versionCode=1
 author=Glovebox contributors
-description=Unified Xiaomi 14 Pro hotspot and proxy console at http://192.168.88.1:80; integrates AP Turbo fixed address, Wi-Fi tuning, sing-box NetProxy status and device logs.
+description=Standalone Xiaomi 14 Pro router console with Android hotspot/USB sharing, fixed management IP and an embedded NetProxy sing-box core.

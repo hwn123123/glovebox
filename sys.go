@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,6 +163,7 @@ func readLoad() string {
 type netSampler struct {
 	wanPrefixes []string
 	lanDev      string
+	xiaomi      bool // count every Android tethering downstream, including USB
 	synth       bool // demo mode: synthetic data
 	synthT      float64
 	burst       int
@@ -250,6 +252,33 @@ func (n *netSampler) isWAN(name string) bool {
 	return false
 }
 
+func (n *netSampler) isLAN(name string) bool {
+	if n.xiaomi {
+		return xiaomiDownstream(name, n.lanDev)
+	}
+	return name == n.lanDev
+}
+
+func (n *netSampler) activeWANIPv4() map[string]bool {
+	out := map[string]bool{}
+	ifs, _ := net.Interfaces()
+	for _, ifc := range ifs {
+		if ifc.Flags&net.FlagUp == 0 || !n.isWAN(ifc.Name) {
+			continue
+		}
+		addrs, _ := ifc.Addrs()
+		for _, addr := range addrs {
+			host, _, _ := strings.Cut(addr.String(), "/")
+			ip := net.ParseIP(host)
+			if ip != nil && ip.To4() != nil && !ip.IsLoopback() {
+				out[ifc.Name] = true
+				break
+			}
+		}
+	}
+	return out
+}
+
 func (n *netSampler) loop(ctx context.Context) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
@@ -270,6 +299,10 @@ func (n *netSampler) sample() {
 	}
 	now := time.Now()
 	cur := readNetDev()
+	activeWAN := map[string]bool{}
+	if n.xiaomi {
+		activeWAN = n.activeWANIPv4()
+	}
 	total, idle, cpuOK := readCPU()
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -283,13 +316,13 @@ func (n *netSampler) sample() {
 			}
 			rx, tx := float64(v[0]-p[0])/dt, float64(v[1]-p[1])/dt
 			switch {
-			case n.isWAN(name):
+			case n.isWAN(name) && (!n.xiaomi || activeWAN[name]):
 				r.WANDown += rx
 				r.WANUp += tx
 				if readTrim("/sys/class/net/"+name+"/operstate") != "down" {
 					r.WANIfs = append(r.WANIfs, name)
 				}
-			case name == n.lanDev:
+			case n.isLAN(name):
 				r.LANUp += rx
 				r.LANDown += tx
 			}

@@ -11,7 +11,8 @@ English · [简体中文](README.zh-CN.md)
 
 ![Overview](docs/screenshots/en/overview.png)
 
-- **Single static binary**, web UI embedded, no runtime dependencies. Packaged as a Magisk module.
+- **One self-contained Magisk module** with the Glovebox web UI, Android system bridge and embedded
+  NetProxy/sing-box runtime; no second management module or web interface is required.
 - **Works with the stock firmware**: supports the ZTE goform stack and Xiaomi 14 Pro / HyperOS
   through Android hotspot APIs, NetProxy's root CLI and `/proc`, `/sys` — the vendor UI and apps keep working.
 - **Installable app (PWA)** with a responsive layout for desktop, tablets, phones (portrait and
@@ -24,8 +25,8 @@ English · [简体中文](README.zh-CN.md)
 | Page | What you get |
 | --- | --- |
 | Overview | Live WAN throughput chart, signal (RSRP/SINR/band) with history, egress node and proxy chain, Tailscale reachability probe, monthly data usage, battery/CPU/memory/temperature gauges, connected clients |
-| Proxy | mihomo or NetProxy groups and nodes, switch nodes, latency tests, rule/global/direct mode, update subscriptions, proxy health and traffic totals |
-| Device | Xiaomi AP Turbo status, fixed `192.168.88.1` management address, Wi-Fi 6/32-client tuning, connected devices, HTTPS & app install guide, restart proxy, reboot, sync the device clock, console password, theme/language |
+| Proxy | mihomo or embedded NetProxy groups and nodes, add/activate/remove subscriptions, switch nodes, latency tests, rule/global/direct mode, proxy health and traffic totals |
+| Device | Android-managed hotspot and USB tethering, AP Turbo status, fixed `192.168.88.1` management address, SSID/password and Wi-Fi 6/32-client tuning, connected devices, HTTPS & app install guide, restart proxy, reboot, sync the device clock, console password, theme/language |
 | Logs | mihomo, Box for Root, Glovebox and Android logcat — level filter, grep with highlight, follow/pause, wrap |
 
 Keyboard: `1`–`4` switch pages, `/` focuses the filter.
@@ -51,8 +52,8 @@ Requirements on the device:
 - Root with [Magisk](https://github.com/topjohnwu/Magisk)
 - Optional on ZTE: [Box for Root](https://github.com/taamarin/box_for_magisk) running mihomo with the
   external controller on `127.0.0.1:9091`
-- Xiaomi 14 Pro: the installed NetProxy module is read through its root `netproxyctl` CLI; the
-  NetProxy subscription and sing-box configuration are not copied or modified by Glovebox.
+- Xiaomi 14 Pro: Glovebox includes NetProxy 8.6.1 and sing-box. A previously installed standalone
+  NetProxy module is stopped and archived outside Magisk's active module directory on first start.
 
 ## Install
 
@@ -65,7 +66,8 @@ Requirements on the device:
    ```
 
 3. Join the hotspot and open **http://192.168.88.1:80**. On Xiaomi 14 Pro, the integrated AP
-   controller keeps this fixed address on the hotspot interface and Glovebox is the only port-80 WebUI.
+   controller starts `nwrt` / `1234567890`, keeps the fixed address on the hotspot interface and
+   enables Android USB tethering. Glovebox is the only management WebUI.
 
 For a friendly name, resolve `glovebox.lan` to `192.168.88.1`, e.g. with mihomo:
 
@@ -116,7 +118,9 @@ echo '{"tailscale_proxy":"Tailscale","tailscale_probe":"http://100.64.0.1/"}' \
 | `mihomo_api`, `mihomo_secret`, `mihomo_insecure` | `https://127.0.0.1:9091` | mihomo controller (legacy ZTE; Xiaomi uses NetProxy CLI) |
 | `main_group` | first visible selector | Proxy group shown on the overview |
 | `box_dir` | `/data/adb/box` | Box for Root directory (logs, restart script) |
-| `netproxy_dir`, `turbo_dir` | `/data/adb/modules/netproxy`, `/data/adb/modules/glovebox` | Xiaomi NetProxy and integrated AP controller paths |
+| `netproxy_dir`, `turbo_dir` | `/data/adb/modules/glovebox/netproxy`, `/data/adb/modules/glovebox` | Embedded NetProxy and integrated AP controller paths |
+| `hotspot_ssid`, `hotspot_password`, `hotspot_hidden` | `nwrt`, `1234567890`, `false` | Android system hotspot profile managed from the Device page |
+| `auto_start_hotspot`, `auto_start_usb_tether` | `true`, `true` | Start Android hotspot and USB tethering after boot; Android NetworkStack remains the DHCP/NAT owner |
 | `tailscale_proxy`, `tailscale_probe` | | mihomo outbound and a tailnet URL to probe through it; both enable the Tailnet card |
 | `delay_url` | `https://www.gstatic.com/generate_204` | URL for latency tests |
 | `wan_prefixes`, `lan_dev` | `sipa_eth`, `rmnet`, `ccmni` / `br0` | Interfaces used for traffic rates |
@@ -130,7 +134,7 @@ module upgrades and uninstalls.
 ```
  browser ──HTTP/HTTPS──▶ glovebox (root, 192.168.88.1:80)
                            ├─ Xiaomi Android/AP adapter + AP Turbo (fixed address, Wi-Fi tuning, clients)
-                           ├─ NetProxy netproxyctl (groups, nodes, subscriptions, mode, service status)
+                           ├─ embedded NetProxy/sing-box (groups, nodes, subscriptions, mode, traffic)
                            ├─ vendor web API   192.168.0.1:8080  (ZTE signal, SIM, usage, clients, Wi-Fi)
                            ├─ mihomo REST API   127.0.0.1:9091   (legacy ZTE groups, nodes, providers, connections)
                            ├─ /proc, /sys                       (rates, CPU, memory, battery, thermal)
@@ -154,8 +158,9 @@ which is why Glovebox talks to 192.168.0.1 rather than loopback.
 
 ## Build
 
-Requires Go 1.24+. The overlay additionally needs Android SDK build-tools and a platform
-`android.jar` (`overlay/build.sh` finds them via `ANDROID_HOME`).
+Requires Go 1.24+. Rebuilding the Android bridge and optional overlay additionally needs Android
+SDK 36 build-tools and `android.jar` (`ANDROID_SDK_ROOT`), plus a Java 17 `javac`. Checked-in build
+artifacts are used when these tools are absent.
 
 ```sh
 ./build.sh                    # dist/stage/ and dist/glovebox-<version>.zip

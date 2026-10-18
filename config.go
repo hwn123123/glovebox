@@ -52,6 +52,14 @@ type Config struct {
 	// accepted from the web/API configuration.
 	NetProxyDir string `json:"netproxy_dir"`
 	TurboDir    string `json:"turbo_dir"`
+	// Xiaomi router defaults. Glovebox writes them through Android's public
+	// SoftApConfiguration/TetheringManager services so the system Settings UI
+	// and NetworkStack remain the single owners of DHCP, NAT and USB functions.
+	HotspotSSID        string `json:"hotspot_ssid"`
+	HotspotPassword    string `json:"hotspot_password"`
+	HotspotHidden      bool   `json:"hotspot_hidden"`
+	AutoStartHotspot   bool   `json:"auto_start_hotspot"`
+	AutoStartUSBTether bool   `json:"auto_start_usb_tether"`
 	// periodically fetch TailscaleProbe through the mihomo outbound TailscaleProxy to check the tailnet;
 	// enabled only when both are set
 	TailscaleProxy string `json:"tailscale_proxy"`
@@ -71,18 +79,22 @@ func defaultConfig() Config {
 		Hostnames:  []string{"glovebox.lan"},
 		AliasAddr:  "192.168.88.1/32",
 		AliasDev:   "wlan2",
-		AllowCIDRs: []string{"127.0.0.0/8", "::1/128"},
+		AllowCIDRs: []string{"127.0.0.0/8", "::1/128", "192.168.88.0/24"},
 		// not 127.0.0.1: the vendor iptables rules only allow 192.168.0.0/24 to reach port 8080
-		ZTEBase:        "http://192.168.0.1:8080",
-		ZTEDB:          "/data/data/com.zte.web/databases/web_settings.db",
-		MihomoAPI:      "https://127.0.0.1:9091",
-		MihomoInsecure: true,
-		BoxDir:         "/data/adb/box",
-		NetProxyDir:    "/data/adb/modules/netproxy",
-		TurboDir:       "/data/adb/modules/glovebox",
-		DelayURL:       "https://www.gstatic.com/generate_204",
-		WANPrefixes:    []string{"sipa_eth", "rmnet", "ccmni"},
-		LANDev:         "wlan2",
+		ZTEBase:            "http://192.168.0.1:8080",
+		ZTEDB:              "/data/data/com.zte.web/databases/web_settings.db",
+		MihomoAPI:          "https://127.0.0.1:9091",
+		MihomoInsecure:     true,
+		BoxDir:             "/data/adb/box",
+		NetProxyDir:        "/data/adb/modules/glovebox/netproxy",
+		TurboDir:           "/data/adb/modules/glovebox",
+		HotspotSSID:        "nwrt",
+		HotspotPassword:    "1234567890",
+		AutoStartHotspot:   true,
+		AutoStartUSBTether: true,
+		DelayURL:           "https://www.gstatic.com/generate_204",
+		WANPrefixes:        []string{"sipa_eth", "rmnet", "ccmni"},
+		LANDev:             "wlan2",
 	}
 }
 
@@ -150,7 +162,7 @@ func (s *configStore) importJSON(r io.Reader) error {
 	if err := json.Unmarshal(b, &keys); err != nil {
 		return err
 	}
-	for _, k := range []string{"password_hash", "session_secret"} {
+	for _, k := range []string{"password_hash", "session_secret", "hotspot_password"} {
 		if _, ok := keys[k]; ok {
 			return errors.New(k + " cannot be imported (use the passwd command)")
 		}
@@ -184,6 +196,9 @@ func (c Config) redacted() Config {
 	}
 	if c.MihomoSecret != "" {
 		c.MihomoSecret = "(set)"
+	}
+	if c.HotspotPassword != "" {
+		c.HotspotPassword = "(set)"
 	}
 	return c
 }

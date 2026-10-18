@@ -412,6 +412,7 @@ const S = { status: null, info: null, proxies: null };
 let page = 'overview';
 let loggedIn = false;
 const PAGES = ['overview', 'proxy', 'device', 'logs'];
+const proxyCoreName = (s = S.status) => s?.platform === 'xiaomi' ? 'NETPROXY' : 'MIHOMO';
 
 function renderChips(s) {
   const c = s.cell || {}, p = s.proxy || {}, ts = s.tailscale || {};
@@ -433,7 +434,7 @@ function renderStatusLine(s) {
   const c = s.cell || {}, p = s.proxy || {}, ts = s.tailscale || {}, r = s.rates || {}, b = s.battery || {};
   const seg = [
     `${c.connected ? c.label : 'NO WAN'}${c.rsrp ? ' ' + c.rsrp + 'dBm' : ''}`,
-    p.running ? `MIHOMO ${String(p.mode || '').toUpperCase()}` : 'MIHOMO DOWN',
+    p.running ? `${proxyCoreName(s)} ${String(p.mode || '').toUpperCase()}` : `${proxyCoreName(s)} DOWN`,
     ts.enabled ? `TS ${ts.online ? ts.delay + 'ms' : 'OFF'}` : null,
     `↓${fmtRate(r.wan_down)[0]} ↑${fmtRate(r.wan_up)[0]} ${fmtRate(Math.max(r.wan_down || 0, r.wan_up || 0))[1]}`,
     b.present ? `BAT ${b.capacity}%${b.external ? '⚡' : ''}` : null,
@@ -482,7 +483,7 @@ function renderOverview(s) {
   // KPI
   kpiRate('down', r.wan_down, h.wan_down || []);
   kpiRate('up', r.wan_up, h.wan_up || []);
-  const rsrp = numOrNull(c.rsrp), sinr = numOrNull(c.sinr);
+  const rsrp = numOrNull(c.rsrp), rsrq = numOrNull(c.rsrq), sinr = numOrNull(c.sinr);
   put('kpi.rsrp', rsrp ?? '—');
   const bars = K['kpi.bars'];
   bars.style.color = rsrp == null ? 'var(--fg-3)' : Q_COLOR[rsrpQ(rsrp)];
@@ -518,17 +519,25 @@ function renderOverview(s) {
   put('cell.network', [tEnum('net', c.label), c.band, c.roaming && c.roaming !== 'Home' ? 'ROAMING' : ''].filter(Boolean).join(' · ') || '—');
   put('cell.sim', tEnum('sim', c.sim) || '—');
   put('cell.rsrp', rsrp == null ? '—' : rsrp + ' dBm');
+  put('cell.rsrq', rsrq == null ? '—' : rsrq + ' dB');
   put('cell.sinr', sinr == null ? '—' : sinr + ' dB');
   qualityBar('cell.rsrp.q', rsrpQ(rsrp));
   qualityBar('cell.sinr.q', sinrQ(sinr));
   put('cell.ip', c.wan_ip || '—');
+  put('cell.interface', c.wan_iface || '—');
+  put('cell.arfcn', c.arfcn || '—');
+  put('cell.simSlot', c.sim_slot ? `SIM ${c.sim_slot}` : '—');
+  put('cell.mccmnc', c.mccmnc || '—');
+  const bootUsage = s.month?.scope === 'boot';
+  put('cell.usageLabel', t(bootUsage ? 'cell.boot' : 'cell.month'));
   put('cell.month', s.month ? `↓ ${fmtBytes(s.month.rx)}  ↑ ${fmtBytes(s.month.tx)}` : '—');
   spark(K['cell.spark'], sig, { min: sn.length ? Math.min(...sn) - 3 : -120, max: sn.length ? Math.max(...sn) + 3 : -60, n: 120 });
 
   // route
-  K['route.err'].hidden = p.running || !err.mihomo;
-  put('route.err', !p.running && err.mihomo ? '[ERR] mihomo: ' + err.mihomo : '');
-  const hops = [[t('route.clients'), String(s.clients ?? 0)], ['mihomo', p.running ? String(p.mode || '').toUpperCase() : 'DOWN']];
+  const proxyErr = err.proxy || err.mihomo;
+  K['route.err'].hidden = p.running || !proxyErr;
+  put('route.err', !p.running && proxyErr ? `[ERR] ${proxyCoreName(s).toLowerCase()}: ${proxyErr}` : '');
+  const hops = [[t('route.clients'), String(s.clients ?? 0)], [proxyCoreName(s).toLowerCase(), p.running ? String(p.mode || '').toUpperCase() : 'DOWN']];
   if (p.running && p.mode !== 'direct' && p.group) {
     hops.push(['group', p.group]);
     chain.forEach((n, i) => hops.push([i === chain.length - 1 ? 'node' : 'group', n]));
@@ -547,6 +556,9 @@ function renderOverview(s) {
   put('route.core', p.version || '—');
 
   // Tailscale
+  K['ts.panel'].hidden = !ts.enabled;
+  K['use.panel'].classList.toggle('s3', !!ts.enabled);
+  K['use.panel'].classList.toggle('s6', !ts.enabled);
   K['ts.off'].hidden = !!ts.enabled;
   K['ts.on'].hidden = !ts.enabled;
   if (ts.enabled) {
@@ -561,6 +573,7 @@ function renderOverview(s) {
 
   // usage
   const rx = s.month?.rx || 0, tx = s.month?.tx || 0;
+  put('use.usageLabel', t(bootUsage ? 'usage.boot' : 'usage.month'));
   put('use.month', s.month ? fmtBytes(rx + tx) : '—');
   put('use.rx', fmtBytes(rx));
   put('use.tx', fmtBytes(tx));
@@ -624,17 +637,30 @@ async function loadProxies(first) {
 function renderProxies(force) {
   const d = S.proxies;
   if (!d) return;
-  $$('#mode button').forEach((b) => b.classList.toggle('on', b.dataset.mode === d.mode));
+  const groups = Array.isArray(d.groups) ? d.groups : [];
+  const populatedGroups = groups.filter((g) => (Array.isArray(g.nodes) && g.nodes.length) || g.now);
+  const proxyRunning = d.running !== false;
+  put('proxy.state', proxyRunning ? String(d.state || 'READY').toUpperCase() : String(d.state || 'DOWN').toUpperCase());
+  K['proxy.state'].className = 'tag ' + (proxyRunning ? 'ok' : 'bad');
+  const runtimeError = !proxyRunning && d.error ? d.error : '';
+  $('#proxy-err').hidden = !runtimeError;
+  $('#proxy-err').textContent = runtimeError ? `[ERR] ${proxyCoreName().toLowerCase()}: ${runtimeError}` : '';
+  $$('#mode button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.mode === d.mode);
+    b.disabled = !proxyRunning;
+  });
+  $('#btn-conns').disabled = !proxyRunning;
   const q = $('#node-filter').value.trim().toLowerCase();
-  const sig = JSON.stringify([d.groups, [...openGroups], [...testing], q, lang]);
+  const sig = JSON.stringify([populatedGroups, d.state, d.error, [...openGroups], [...testing], q, lang]);
   if (sig === proxySig && !force) return;
   proxySig = sig;
-  const html = (d.groups || []).map((g) => {
-    const nodes = q ? g.nodes.filter((n) => n.name.toLowerCase().includes(q)) : g.nodes;
+  const html = populatedGroups.map((g) => {
+    const allNodes = Array.isArray(g.nodes) ? g.nodes : [];
+    const nodes = q ? allNodes.filter((n) => n.name.toLowerCase().includes(q)) : allNodes;
     if (q && !nodes.length && !g.name.toLowerCase().includes(q)) return '';
     const open = openGroups.has(g.name) || !!q;
     const selectable = g.type === 'Selector';
-    const chain = g.chain && g.chain.length ? g.chain : [g.now];
+    const chain = g.chain && g.chain.length ? g.chain : (g.now ? [g.now] : []);
     const cards = open ? `<div class="nodes">${nodes.map((n) => {
       const dc = n.group ? 'd-none' : delayCls(n.delay);
       const width = n.group || n.delay < 0 ? 0 : n.delay === 0 ? 100 : clamp(n.delay / 10, 4, 100);
@@ -649,17 +675,19 @@ function renderProxies(force) {
         <h2 class="gname" title="${esc(g.name)}">${esc(g.name)}</h2>
         <span class="tag${selectable ? ' acc' : ''}">${esc(tEnum('gt', g.type))}</span>
         <span class="gnow">${chain.map((n) => `<span class="arrow">→</span> ${esc(n)}`).join(' ')}</span>
-        <div class="pa"><span class="dim small">${g.nodes.length}</span>
+        <div class="pa"><span class="dim small">${allNodes.length}</span>
           <button class="btn sm" data-test="${esc(g.name)}" ${testing.has(g.name) ? 'disabled' : ''}>${testing.has(g.name) ? t('act.testing') + '…' : t('act.test')}</button></div>
       </header>${cards}</article>`;
   }).join('');
-  $('#groups').innerHTML = html || `<p class="panel pad dim">${t('proxy.noMatch')}</p>`;
+  $('#groups').innerHTML = html || `<div class="panel pad empty-state"><b>${t(q ? 'proxy.noMatch' : 'proxy.empty')}</b>${q ? '' : `<span>${t('proxy.emptyHint')}</span>`}</div>`;
   $('#providers').innerHTML = (d.providers || []).length
     ? `<table><thead><tr><th>${t('th.name')}</th><th>${t('th.kind')}</th><th class="num">${t('th.count')}</th><th class="num">${t('th.updated')}</th><th></th></tr></thead><tbody>${
-      d.providers.map((p) => `<tr><td>${esc(p.name)}</td><td><span class="tag">${esc(tEnum('kind', p.kind))}</span></td><td class="num">${p.count.toLocaleString()}</td>
+      d.providers.map((p) => `<tr><td>${esc(p.name)}${p.active ? `<span class="sub">${t('proxy.active')}</span>` : ''}</td><td><span class="tag">${esc(tEnum('kind', p.kind))}</span></td><td class="num">${p.count.toLocaleString()}</td>
         <td class="num" title="${esc(p.updated_at)}">${relTime(p.updated_at)}</td>
-        <td class="num"><button class="btn sm" data-update="${esc(p.name)}" data-kind="${esc(p.kind)}">${t('act.update')}</button></td></tr>`).join('')}</tbody></table>`
-    : '<p class="empty">—</p>';
+        <td class="num"><button class="btn sm" data-update="${esc(p.name)}" data-kind="${esc(p.kind)}">${t('act.update')}</button>
+          ${p.id && !p.active ? `<button class="btn sm" data-sub-activate="${esc(p.id)}">${t('proxy.activate')}</button>` : ''}
+          ${p.id ? `<button class="btn sm danger" data-sub-remove="${esc(p.id)}" data-sub-name="${esc(p.name)}">${t('proxy.remove')}</button>` : ''}</td></tr>`).join('')}</tbody></table>`
+    : `<p class="empty">${t('proxy.noProviders')}</p>`;
 }
 
 $('#groups').addEventListener('click', async (ev) => {
@@ -673,10 +701,11 @@ $('#groups').addEventListener('click', async (ev) => {
     try {
       const r = await api('/api/proxies/delay', { group }, { timeout: 30000 });
       if (r.error) toast(t('toast.testFailed', { err: r.error }), true);
-      const g = S.proxies.groups.find((x) => x.name === group);
-      const tested = new Set(g ? g.nodes.filter((n) => !n.group).map((n) => n.name) : []);
+      const groups = Array.isArray(S.proxies.groups) ? S.proxies.groups : [];
+      const g = groups.find((x) => x.name === group);
+      const tested = new Set(g ? (g.nodes || []).filter((n) => !n.group).map((n) => n.name) : []);
       // a node can appear in several groups; update all of them
-      S.proxies.groups.forEach((gg) => gg.nodes.forEach((n) => { if (tested.has(n.name)) n.delay = r.delays[n.name] ?? 0; }));
+      groups.forEach((gg) => (gg.nodes || []).forEach((n) => { if (tested.has(n.name)) n.delay = r.delays[n.name] ?? 0; }));
     } catch (e) { fail(e); }
     testing.delete(group);
     renderProxies(true);
@@ -730,7 +759,45 @@ async function updateProviders(btn, body) {
 $('#btn-update').addEventListener('click', (ev) => updateProviders(ev.currentTarget, {}));
 $('#providers').addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-update]');
-  if (b) updateProviders(b, { kind: b.dataset.kind, name: b.dataset.update });
+  if (b) { updateProviders(b, { kind: b.dataset.kind, name: b.dataset.update }); return; }
+  const activate = ev.target.closest('[data-sub-activate]');
+  if (activate) {
+    busy(activate, null, async () => {
+      await api('/api/proxies/subscriptions', { action: 'activate', id: activate.dataset.subActivate });
+      toast(t('proxy.activated'));
+      await loadProxies();
+    }).catch(fail);
+    return;
+  }
+  const remove = ev.target.closest('[data-sub-remove]');
+  if (remove) (async () => {
+    if (!(await confirmBox(t('proxy.confirmRemove', { name: esc(remove.dataset.subName) }), { danger: true }))) return;
+    await busy(remove, null, async () => {
+      await api('/api/proxies/subscriptions', { action: 'remove', id: remove.dataset.subRemove });
+      toast(t('proxy.removed'));
+      await loadProxies();
+    });
+  })().catch(fail);
+});
+
+$('#btn-sub-add').addEventListener('click', async (ev) => {
+  const addButton = ev.currentTarget;
+  let value = '';
+  const ok = await openModal({
+    title: t('proxy.addSub'), ok: t('proxy.add'),
+    html: `<label class="field"><span class="lbl">URL</span><input type="url" id="sub-url" autocomplete="off" placeholder="https://…" required></label>`,
+    onOpen: (body) => {
+      const input = body.querySelector('#sub-url');
+      input.addEventListener('input', () => { value = input.value.trim(); });
+      input.focus();
+    },
+  });
+  if (!ok || !value) return;
+  await busy(addButton, null, async () => {
+    await api('/api/proxies/subscriptions', { action: 'add', url: value }, { timeout: 100000 });
+    toast(t('proxy.added'));
+    await loadProxies();
+  }).catch(fail);
 });
 
 $('#btn-conns').addEventListener('click', async () => {
@@ -772,12 +839,17 @@ async function loadDevice(first) {
   if (S.status) renderClients(S.status.client_list, 'clients.table2', 'clients.count2');
   if (!S.info) { try { S.info = await api('/api/info'); } catch { /* shown without HTTPS details */ } }
   renderSecure();
-  if (first || !wifiLoaded) {
+  if (first || !wifiLoaded || S.status?.platform === 'xiaomi') {
     try { renderWiFi(await api('/api/wifi')); } catch (e) {
       if (e instanceof AuthError || e instanceof NetError) return;
       $('#wifi').innerHTML = `<article class="panel"><div class="pb err">[ERR] ${esc(e.message)}</div></article>`;
     }
   }
+}
+
+function wifiStandard(value) {
+  const n = String(value || '').trim();
+  return ({ '4': 'Wi-Fi 4', '5': 'Wi-Fi 5', '6': 'Wi-Fi 6', '7': 'Wi-Fi 7' })[n] || n || '—';
 }
 
 function renderWiFi(d) {
@@ -786,7 +858,12 @@ function renderWiFi(d) {
   let html = '';
   if (d.turbo) {
     const x = d.turbo;
-    html += `<article class="panel s12 turbo-card"><header class="ph"><span class="pi">⚡</span><h2>AP TURBO</h2><span class="sub">${t('turbo.summary')}</span><div class="pa"><span class="tag ${x.enabled ? 'ok' : 'warn'}">${x.enabled ? 'ON' : 'OFF'}</span></div></header><div class="pb"><div class="kv-grid"><div><span class="dim">${t('turbo.interface')}</span><b>${esc(x.interface || '—')}</b></div><div><span class="dim">${t('turbo.address')}</span><b>${esc(x.fixed_address || '—')}</b></div><div><span class="dim">${t('turbo.standard')}</span><b>${esc(x.standard || '—')}</b></div><div><span class="dim">${t('wifi.max')}</span><b>${esc((d.aps[0] || {}).max_clients || '—')}</b></div><div><span class="dim">${t('turbo.offload')}</span><b>${x.offload ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('turbo.country')}</span><b>${esc(x.country || '—')}</b></div></div><div class="actions"><button class="btn ${x.enabled ? '' : 'pri'}" data-turbo="${x.enabled ? 0 : 1}">${x.enabled ? t('turbo.disable') : t('turbo.enable')}</button><span class="note">${t('turbo.note')}</span></div></div></article>`;
+    const freq = x.frequency ? `${x.frequency} MHz${x.channel ? ` · CH ${x.channel}` : ''}` : '—';
+    html += `<article class="panel s12 turbo-card"><header class="ph"><span class="pi">⚡</span><h2>AP TURBO</h2><span class="sub">${t('turbo.summary')}</span><div class="pa"><span class="tag ${x.active ? 'ok' : x.enabled ? 'warn' : ''}">${x.active ? 'ACTIVE' : x.enabled ? 'STANDBY' : 'OFF'}</span></div></header><div class="pb"><div class="kv-grid"><div><span class="dim">${t('turbo.profile')}</span><b>${x.enabled ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('turbo.hotspotState')}</span><b>${x.active ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('turbo.interface')}</span><b>${esc(x.interface || '—')}</b></div><div><span class="dim">${t('turbo.address')}</span><b>${esc(x.fixed_address || '—')}</b></div><div><span class="dim">${t('turbo.standard')}</span><b>${esc(wifiStandard(x.standard))}${x.ax ? ' · AX' : ''}${x.be ? ' · BE' : ''}</b></div><div><span class="dim">${t('wifi.frequency')}</span><b>${esc(freq)}</b></div><div><span class="dim">BSSID</span><b>${esc(x.bssid || '—')}</b></div><div><span class="dim">${t('wifi.max')}</span><b>${esc((d.aps[0] || {}).max_clients || '—')}</b></div><div><span class="dim">${t('turbo.offload')}</span><b>${x.offload ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('turbo.country')}</span><b>${esc(x.country || '—')}</b></div></div><div class="actions"><button class="btn ${x.enabled ? '' : 'pri'}" data-turbo="${x.enabled ? 0 : 1}">${x.enabled ? t('turbo.disable') : t('turbo.enable')}</button><span class="note">${t('turbo.note')}</span></div></div></article>`;
+  }
+  if (d.usb) {
+    const u = d.usb;
+    html += `<article class="panel s12"><header class="ph"><span class="pi">USB</span><h2>USB TETHER</h2><span class="sub">${t('usb.summary')}</span><div class="pa"><span class="tag ${u.active ? 'ok' : u.connected ? 'warn' : ''}">${u.active ? 'ON' : u.connected ? 'LINK' : 'STANDBY'}</span></div></header><div class="pb"><div class="kv-grid"><div><span class="dim">${t('usb.autostart')}</span><b>${u.enabled ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('usb.connected')}</span><b>${t(u.connected ? 'state.connected' : 'state.disconnected')}</b></div><div><span class="dim">${t('turbo.interface')}</span><b>${esc(u.interface || '—')}</b></div><div><span class="dim">${t('usb.function')}</span><b>${esc(u.function || '—')}</b></div><div><span class="dim">${t('usb.nativeAddress')}</span><b>${esc(u.native_address || '—')}</b></div><div><span class="dim">${t('usb.managementAddress')}</span><b>${esc(u.management_address || '—')}</b></div><div><span class="dim">DHCP · NAT</span><b>${u.dhcp && u.nat ? 'ON' : '—'}</b></div></div><div class="actions"><button class="btn ${u.enabled ? '' : 'pri'}" data-usb="${u.enabled ? 0 : 1}">${u.enabled ? t('usb.disable') : t('usb.enable')}</button><span class="note">${t('usb.note')}</span></div></div></article>`;
   }
   html += (d.aps || []).map((ap) => {
     const cur = Number(ap.max_clients) || 0;
@@ -795,17 +872,21 @@ function renderWiFi(d) {
     }
     const opts = [];
     for (let i = 1; i <= Math.max(max, cur); i++) opts.push(`<option value="${i}"${i === cur ? ' selected' : ''}>${i}</option>`);
-    return `<form class="panel wifi-form" data-chip="${esc(ap.chip)}" data-enabled="${ap.enabled ? 1 : 0}" data-band="${esc(ap.band)}" data-max="${cur}">
-      <header class="ph"><span class="pi">${ap.chip === '1' ? '5G' : '2.4'}</span><h2>WLAN · ${esc(ap.band)}</h2><div class="pa"><span class="tag ${ap.enabled ? 'ok' : ''}">${ap.enabled ? 'ON' : 'OFF'}</span></div></header>
+    const maxField = ap.max_clients_editable === false
+      ? `<div class="field"><span class="lbl">${t('wifi.max')}</span><b>${cur} · ${t('wifi.maxFixed')}</b><input type="hidden" name="max" value="${cur}"></div>`
+      : `<label class="field"><span class="lbl">${t('wifi.max')} · <span class="dim">${t('wifi.maxNote', { n: max })}</span></span><select name="max">${opts.join('')}</select></label>`;
+    const xiaomi = ap.chip === 'xiaomi';
+    return `<form class="panel wifi-form${xiaomi ? ' xiaomi' : ''}" data-chip="${esc(ap.chip)}" data-enabled="${ap.enabled ? 1 : 0}" data-band="${esc(ap.band)}" data-max="${cur}">
+      <header class="ph"><span class="pi">${xiaomi ? 'AP' : ap.chip === '1' ? '5G' : '2.4'}</span><h2>${xiaomi ? t('wifi.systemHotspot') : `WLAN · ${esc(ap.band)}`}</h2><span class="sub">${xiaomi ? t('wifi.systemManaged') : ''}</span><div class="pa"><span class="tag ${ap.enabled ? 'ok' : ''}">${ap.enabled ? 'ON' : 'OFF'}</span></div></header>
       <div class="pb">
-        <label class="field switch"><span class="lbl">${t('wifi.enabled')}</span><input type="checkbox" name="enabled" ${ap.enabled ? 'checked' : ''}><span class="sw"></span></label>
+        <label class="field switch"><span class="lbl">${t(xiaomi ? 'wifi.hotspotEnabled' : 'wifi.enabled')}</span><input type="checkbox" name="enabled" ${ap.enabled ? 'checked' : ''}><span class="sw"></span></label>
+        <label class="field switch"><span class="lbl">${t('wifi.hidden')}</span><input type="checkbox" name="hidden" ${ap.hidden ? 'checked' : ''}><span class="sw"></span></label>
         <label class="field"><span class="lbl">${t('wifi.ssid')}</span><input type="text" name="ssid" value="${esc(ap.ssid)}" maxlength="32" autocomplete="off" spellcheck="false"></label>
         <div class="field"><span class="lbl">${t('wifi.password')}</span><div class="pw-row">
-          <input type="password" name="password" value="${esc(ap.password)}" autocomplete="off" spellcheck="false" aria-label="${esc(t('wifi.password'))}">
+          <input type="password" name="password" value="${esc(ap.password)}" minlength="8" maxlength="63" autocomplete="off" spellcheck="false" aria-label="${esc(t('wifi.password'))}">
           <button class="btn" type="button" data-showpw>${t('act.show')}</button></div></div>
-        <label class="field"><span class="lbl">${t('wifi.max')} · <span class="dim">${t('wifi.maxNote', { n: max })}</span></span><select name="max">${opts.join('')}</select></label>
-        <label class="field switch"><span class="lbl">${t('wifi.hidden')}</span><input type="checkbox" name="hidden" ${ap.hidden ? 'checked' : ''}><span class="sw"></span></label>
-        <p class="note">${esc(t('wifi.note', { auth: ap.auth_mode || '—' }))}</p>
+        ${maxField}
+        <p class="note">${esc(t(xiaomi ? 'wifi.noteXiaomi' : 'wifi.note', { auth: ap.auth_mode || '—' }))}</p>
         <button class="btn pri" type="submit">${t('act.save')}</button>
       </div></form>`;
   }).join('');
@@ -820,6 +901,19 @@ $('#wifi').addEventListener('click', async (ev) => {
   await busy(b, null, async () => {
     await api('/api/wifi/turbo', { enabled });
     toast(enabled ? t('turbo.enabled') : t('turbo.disabled'));
+    wifiLoaded = false;
+    setTimeout(() => page === 'device' && loadDevice(true), 1800);
+  }).catch(fail);
+});
+
+$('#wifi').addEventListener('click', async (ev) => {
+  const b = ev.target.closest('[data-usb]');
+  if (!b) return;
+  const enabled = b.dataset.usb === '1';
+  if (!enabled && !(await confirmBox(t('usb.confirmDisable'), { danger: true }))) return;
+  await busy(b, null, async () => {
+    await api('/api/usb', { enabled });
+    toast(enabled ? t('usb.enabled') : t('usb.disabled'));
     wifiLoaded = false;
     setTimeout(() => page === 'device' && loadDevice(true), 1800);
   }).catch(fail);
@@ -885,7 +979,7 @@ function renderSecure() {
     if (hs.custom) {
       parts.push(`<p class="dim">${t('https.custom')}</p>`);
     } else {
-      parts.push(`<p class="dim small">${esc(t('https.constraint', { hosts: (info.hostnames || []).join(', ') }))}</p>`);
+      parts.push(`<p class="dim small">${esc(t('https.constraint', { hosts: (hs.hosts || info.hostnames || []).join(', ') }))}</p>`);
       parts.push(`<p class="fp">${t('https.fp')}: ${esc(hs.ca_sha256 || '')}</p>`);
       const steps = (k) => `<details${(k === 'ios' && isIOS()) || (k === 'android' && /Android/.test(navigator.userAgent)) ? ' open' : ''}><summary>${t(`https.${k}`)}</summary><ol>${[1, 2, 3].map((i) => `<li>${esc(t(`https.${k}.${i}`))}</li>`).join('')}</ol></details>`;
       parts.push(`<div class="secure-steps">${steps('ios')}${steps('android')}${steps('desktop')}</div>`);
@@ -987,9 +1081,39 @@ $('#pref-crt').addEventListener('change', (ev) => {
 
 /* ---------- logs ---------- */
 
-const LOG_TITLES = { mihomo: 'tail -f /data/adb/box/run/clash.log', box: 'tail -f /data/adb/box/run/runs.log', glovebox: 'tail -f /data/adb/glovebox/glovebox.log', system: 'logcat -d *:W' };
+const LOG_SOURCES = ['mihomo', 'box', 'glovebox', 'system'];
+function logTitles() {
+  if (S.status?.platform === 'xiaomi') return { mihomo: 'tail -f netproxy/logs/sing-box.log', box: 'tail -f netproxy/logs/service.log', glovebox: 'tail -f glovebox.log', system: 'logcat -d *:W' };
+  return { mihomo: 'tail -f /data/adb/box/run/clash.log', box: 'tail -f /data/adb/box/run/runs.log', glovebox: 'tail -f /data/adb/glovebox/glovebox.log', system: 'logcat -d *:W' };
+}
+function renderPlatformLabels() {
+  const xiaomi = S.status?.platform === 'xiaomi';
+  put('log.proxy', xiaomi ? 'NETPROXY' : 'MIHOMO');
+  put('log.service', xiaomi ? 'SERVICE' : 'BOX');
+  put('maint.restart', xiaomi ? t('act.restartNetProxy') : t('act.restartProxy'));
+  renderMaintenance();
+  if ($('#log-title')) $('#log-title').textContent = logTitles()[logSrc];
+}
+
+function renderMaintenance() {
+  const tag = $('#maint-proxy-state');
+  const detail = $('#maint-proxy-detail');
+  const s = S.status;
+  if (!s) { tag.hidden = true; detail.hidden = true; return; }
+  const p = s.proxy || {};
+  const name = proxyCoreName(s);
+  const state = String(p.state || (p.running ? 'running' : 'stopped')).toLowerCase();
+  const failed = !p.running && (state === 'failed' || !!p.error || !!s.errors?.proxy);
+  tag.hidden = false;
+  tag.className = `tag ${p.running ? 'ok' : failed ? 'bad' : 'warn'}`;
+  tag.textContent = p.running ? 'RUNNING' : failed ? 'FAILED' : 'STOPPED';
+  const error = p.error || s.errors?.proxy || '';
+  detail.hidden = false;
+  detail.className = `maint-status ${error ? 'err' : 'dim'}`;
+  detail.textContent = error ? `${name}: ${error}` : t(p.running ? 'maint.proxyRunning' : 'maint.proxyStopped', { name });
+}
 let logSrc = store.get('logsrc', 'mihomo');
-if (!LOG_TITLES[logSrc]) logSrc = 'mihomo';
+if (!LOG_SOURCES.includes(logSrc)) logSrc = 'mihomo';
 let logLevel = 'all';
 let logText = '';
 let logMissing = false;
@@ -1046,7 +1170,7 @@ function setLogSrc(src) {
   logSrc = src;
   store.set('logsrc', src);
   $$('#log-src button').forEach((b) => b.classList.toggle('on', b.dataset.src === src));
-  $('#log-title').textContent = LOG_TITLES[src];
+  $('#log-title').textContent = logTitles()[src];
   logText = '';
   $('#log').innerHTML = `<div class="l debug">${t('logs.loading')}</div>`;
 }
@@ -1088,7 +1212,7 @@ $('#log').addEventListener('scroll', () => {
 /* ---------- routing and polling ---------- */
 
 let statusTimer = null, pageTimer = null;
-const PAGE_EVERY = { overview: 0, proxy: 10000, device: 0, logs: 2500 };
+const PAGE_EVERY = { overview: 0, proxy: 10000, device: 10000, logs: 2500 };
 const visible = () => document.visibilityState === 'visible';
 
 async function statusTick() {
@@ -1100,6 +1224,7 @@ async function statusTick() {
       S.status = s;
       renderChips(s);
       renderStatusLine(s);
+      renderPlatformLabels();
       if (page === 'overview') renderOverview(s);
       if (page === 'device') renderClients(s.client_list, 'clients.table2', 'clients.count2');
       $('#crumb').parentElement.title = s.time || '';
@@ -1165,7 +1290,7 @@ function renderAll() {
   routeSig = '';
   proxySig = '';
   $$('[data-sig]').forEach((el) => { delete el.dataset.sig; });
-  if (S.status) { renderChips(S.status); renderStatusLine(S.status); renderOverview(S.status); renderClients(S.status.client_list, 'clients.table2', 'clients.count2'); }
+  if (S.status) { renderChips(S.status); renderStatusLine(S.status); renderPlatformLabels(); renderOverview(S.status); renderClients(S.status.client_list, 'clients.table2', 'clients.count2'); }
   if (S.proxies) renderProxies(true);
   if (logText || logMissing) renderLog();
   if (wifiLoaded) { wifiLoaded = false; if (page === 'device') loadDevice(true); }

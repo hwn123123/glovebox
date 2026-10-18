@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -44,6 +43,7 @@ type server struct {
 
 func newServer(cs *configStore, logDir string) *server {
 	c := cs.get()
+	platform := detectPlatform(c.Platform)
 	proxyURL, proxySecret, proxyCert, proxyKey := proxyController(c)
 	mc := newMihomo(proxyURL, proxySecret, c.MihomoInsecure, proxyCert, proxyKey)
 	return &server{
@@ -51,10 +51,10 @@ func newServer(cs *configStore, logDir string) *server {
 		auth:     &auth{cfg: cs},
 		zte:      newZTE(c.ZTEBase, c.ZTEDB),
 		mihomo:   mc,
-		net:      &netSampler{wanPrefixes: c.WANPrefixes, lanDev: c.LANDev},
+		net:      &netSampler{wanPrefixes: c.WANPrefixes, lanDev: c.LANDev, xiaomi: platform == "xiaomi"},
 		ts:       &tsProbe{m: mc, cfg: cs},
 		logDir:   logDir,
-		platform: detectPlatform(c.Platform),
+		platform: platform,
 		sys:      readSysInfo,
 	}
 }
@@ -66,6 +66,9 @@ func (s *server) run(ctx context.Context) error {
 	go s.sigLoop(ctx)
 	go s.ts.loop(ctx)
 	go ensureAlias(ctx, c.AliasAddr, c.AliasDev)
+	if s.platform == "xiaomi" && !s.demo {
+		go s.bootXiaomiRouter(ctx)
+	}
 
 	h := s.routes()
 	newSrv := func() *http.Server {
@@ -80,35 +83,43 @@ func (s *server) run(ctx context.Context) error {
 	// plain Serve that runs first would leave the TLS listener advertising h2 without a handler.
 	srv := newSrv()
 	servers := []*http.Server{srv}
-	errc := make(chan error, len(c.Listen)+len(c.TLSListen))
-	for _, addr := range c.Listen {
-		ln, err := listenTCP(addr)
-		if err != nil {
-			return fmt.Errorf("listen %s: %w", addr, err)
+	serveRetry := func(srv *http.Server, addr string, tlsMode bool) {
+		for ctx.Err() == nil {
+			ln, err := listenTCP(addr)
+			if err == nil {
+				if tlsMode {
+					log.Printf("glovebox %s listening on https://%s", version, addr)
+					err = srv.ServeTLS(ln, "", "")
+				} else {
+					log.Printf("glovebox %s listening on http://%s", version, addr)
+					err = srv.Serve(ln)
+				}
+			}
+			if ctx.Err() != nil || err == http.ErrServerClosed {
+				return
+			}
+			log.Printf("listener %s unavailable, retrying: %v", addr, err)
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
-		log.Printf("glovebox %s listening on http://%s", version, addr)
-		go func() { errc <- srv.Serve(ln) }()
+	}
+	for _, addr := range c.Listen {
+		go serveRetry(srv, addr, false)
 	}
 	if s.certs != nil && len(c.TLSListen) > 0 {
 		tlsSrv := newSrv()
 		tlsSrv.TLSConfig = &tls.Config{GetCertificate: s.certs.getCertificate, MinVersion: tls.VersionTLS12}
 		servers = append(servers, tlsSrv)
 		for _, addr := range c.TLSListen {
-			ln, err := listenTCP(addr)
-			if err != nil {
-				// HTTPS is optional; failing to bind must not take HTTP down
-				log.Printf("HTTPS listen %s: %v", addr, err)
-				continue
-			}
-			log.Printf("glovebox %s listening on https://%s", version, addr)
-			go func() { errc <- tlsSrv.ServeTLS(ln, "", "") }()
+			go serveRetry(tlsSrv, addr, true)
 		}
 	}
-	select {
-	case <-ctx.Done():
-	case err := <-errc:
-		log.Printf("HTTP server stopped: %v", err)
-	}
+	<-ctx.Done()
 	sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	for _, sv := range servers {
@@ -158,6 +169,8 @@ func (s *server) routes() http.Handler {
 	authed("GET /api/wifi", s.handleWiFi)
 	authed("POST /api/wifi", s.handleSetWiFi)
 	authed("POST /api/wifi/turbo", s.handleSetTurbo)
+	authed("POST /api/usb", s.handleSetUSB)
+	authed("POST /api/proxies/subscriptions", s.handleNetProxySubscription)
 	authed("POST /api/box/restart", s.handleBoxRestart)
 	authed("POST /api/device/reboot", s.handleReboot)
 	authed("POST /api/device/time", s.handleSetTime)
@@ -176,7 +189,12 @@ const csp = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-
 func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c := s.cfg.get()
-		if !allowedRemote(r.RemoteAddr, c.AllowCIDRs) && !allowedOnInterface(r.RemoteAddr, c.LANDev) {
+		allowed := allowedRemote(r.RemoteAddr, c.AllowCIDRs) ||
+			allowedOnInterface(r.RemoteAddr, c.LANDev)
+		if s.platform == "xiaomi" {
+			allowed = allowed || allowedOnXiaomiDownstream(r.RemoteAddr, c.LANDev)
+		}
+		if !allowed {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -190,6 +208,22 @@ func (s *server) guard(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// allowedOnXiaomiDownstream admits clients from the address range Android assigned to any
+// active Wi-Fi or USB tethering interface. This keeps DHCP fully owned by NetworkStack while
+// letting USB clients reach the same Glovebox endpoint as hotspot clients.
+func allowedOnXiaomiDownstream(remote, wifiDev string) bool {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	for _, ifc := range ifaces {
+		if xiaomiDownstream(ifc.Name, wifiDev) && allowedOnInterface(remote, ifc.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 // allowedOnInterface admits only peers in one of the LAN interface's directly connected

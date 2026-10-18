@@ -62,3 +62,22 @@ func TestCertManagerNameConstraints(t *testing.T) {
 		t.Fatal("CA reused although it does not permit the new hostname")
 	}
 }
+
+func TestCertManagerInfoPrefersManagementIP(t *testing.T) {
+	c := defaultConfig()
+	m, err := newCertManager(t.TempDir(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := m.info(c)
+	if info.URL != "https://192.168.88.1/" {
+		t.Fatalf("HTTPS URL = %q, want fixed management IP", info.URL)
+	}
+	want := map[string]bool{"glovebox.lan": true, "192.168.88.1": true}
+	for _, host := range info.Hosts {
+		delete(want, host)
+	}
+	if len(want) != 0 {
+		t.Fatalf("HTTPS hosts missing %v (got %v)", want, info.Hosts)
+	}
+}

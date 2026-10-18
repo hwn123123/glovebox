@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,7 +28,7 @@ func (s *server) netproxyCall(ctx context.Context, args ...string) (json.RawMess
 	}
 	all := []string{"--json", "--timeout", "10s"}
 	all = append(all, args...)
-	out, err := run(ctx, 15*time.Second, filepath.Join(c.NetProxyDir, "netproxyctl"), all...)
+	out, err := run(ctx, 15*time.Second, netproxyExecutable(c), all...)
 	if err != nil && strings.TrimSpace(out) == "" {
 		return nil, err
 	}
@@ -42,6 +44,14 @@ func (s *server) netproxyCall(ctx context.Context, args ...string) (json.RawMess
 		return nil, apiErr("netproxy_error", msg)
 	}
 	return reply.Data, nil
+}
+
+func netproxyExecutable(c Config) string {
+	p := filepath.Join(c.NetProxyDir, "bin/netproxyctl")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return filepath.Join(c.NetProxyDir, "netproxyctl")
 }
 
 type netproxyNode struct {
@@ -61,6 +71,30 @@ type netproxyGroup struct {
 type netproxyNodeList struct {
 	Group netproxyGroup  `json:"group"`
 	Nodes []netproxyNode `json:"nodes"`
+}
+
+type netproxySubscription struct {
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Type           string    `json:"type"`
+	Active         bool      `json:"active"`
+	NodeCount      int       `json:"node_count"`
+	AutoUpdate     bool      `json:"auto_update"`
+	UpdateInterval int       `json:"update_interval"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	LastError      string    `json:"last_error"`
+}
+
+func (s *server) netproxySubscriptions(ctx context.Context) ([]netproxySubscription, error) {
+	b, err := s.netproxyCall(ctx, "sub", "list")
+	if err != nil {
+		return nil, err
+	}
+	var out []netproxySubscription
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *server) netproxyNodes(ctx context.Context) ([]netproxyNodeList, error) {
@@ -197,12 +231,12 @@ func (s *server) handleNetProxyProxies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, _ := s.netproxyStatus(ctx)
-	var groups []proxyGroup
+	groups := make([]proxyGroup, 0, len(lists))
 	for _, item := range lists {
 		if item.Group.Name == "" {
 			continue
 		}
-		g := proxyGroup{Name: item.Group.Name, Type: "Selector", Now: "", Chain: nil}
+		g := proxyGroup{Name: item.Group.Name, Type: "Selector", Now: "", Chain: []string{}, Nodes: []proxyNode{}}
 		if item.Group.ID == st.ActiveGroupID {
 			g.Now = selectedTag(st.SelectedNodeRef)
 		}
@@ -212,21 +246,71 @@ func (s *server) handleNetProxyProxies(w http.ResponseWriter, r *http.Request) {
 		groups = append(groups, g)
 	}
 	providers := []map[string]any{}
-	if b, e := s.netproxyCall(ctx, "catalog", "list"); e == nil {
-		var cats []struct {
-			Name      string    `json:"name"`
-			Type      string    `json:"type"`
-			NodeCount int       `json:"node_count"`
-			UpdatedAt time.Time `json:"updated_at"`
-		}
-		if json.Unmarshal(b, &cats) == nil {
-			for _, cat := range cats {
-				providers = append(providers, map[string]any{"name": cat.Name, "kind": "proxies", "count": cat.NodeCount, "updated_at": cat.UpdatedAt})
-			}
+	if subs, e := s.netproxySubscriptions(ctx); e == nil {
+		for _, sub := range subs {
+			providers = append(providers, map[string]any{
+				"id": sub.ID, "name": sub.Name, "kind": "proxies", "count": sub.NodeCount,
+				"updated_at": sub.UpdatedAt, "active": sub.Active, "error": sub.LastError,
+			})
 		}
 	}
 	mode := formatNetproxyMode(st.OutboundMode)
-	writeJSON(w, http.StatusOK, map[string]any{"mode": mode, "groups": groups, "providers": providers})
+	running := st.State == "ready" || st.State == "started"
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mode": mode, "groups": groups, "providers": providers,
+		"running": running, "state": st.State, "backend": st.ConfiguredBackend, "error": st.Error,
+	})
+}
+
+func (s *server) handleNetProxySubscription(w http.ResponseWriter, r *http.Request) {
+	if s.platform != "xiaomi" {
+		writeErr(w, http.StatusNotImplemented, apiErr("netproxy_unavailable", "subscription management requires integrated NetProxy"))
+		return
+	}
+	var in struct {
+		Action string `json:"action"`
+		ID     string `json:"id"`
+		URL    string `json:"url"`
+	}
+	if err := readBody(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var args []string
+	switch in.Action {
+	case "add":
+		u, err := url.ParseRequestURI(strings.TrimSpace(in.URL))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			writeErr(w, http.StatusBadRequest, apiErr("subscription_url_invalid", "subscription URL must be HTTP or HTTPS"))
+			return
+		}
+		args = []string{"sub", "add", u.String()}
+	case "activate", "remove":
+		known := false
+		if subs, err := s.netproxySubscriptions(r.Context()); err == nil {
+			for _, sub := range subs {
+				if sub.ID == in.ID {
+					known = true
+					break
+				}
+			}
+		}
+		if !known {
+			writeErr(w, http.StatusBadRequest, apiErr("subscription_unknown", "subscription does not exist"))
+			return
+		}
+		args = []string{"sub", in.Action, in.ID}
+	default:
+		writeErr(w, http.StatusBadRequest, apiErr("subscription_action_invalid", "action must be add, activate or remove"))
+		return
+	}
+	data, err := s.netproxyCall(r.Context(), args...)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	log.Printf("NetProxy subscription %s", in.Action)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": json.RawMessage(data)})
 }
 
 func (s *server) handleNetProxySelect(w http.ResponseWriter, r *http.Request) {

@@ -52,6 +52,7 @@ type apInfo struct {
 	AuthMode  string `json:"auth_mode"`
 	Hidden    bool   `json:"hidden"`
 	MaxClient string `json:"max_clients"`
+	MaxEdit   bool   `json:"max_clients_editable"`
 	Editable  bool   `json:"editable"`
 }
 
@@ -89,8 +90,12 @@ func (s *server) handleWiFi(w http.ResponseWriter, r *http.Request) {
 			max = "32"
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"aps":           []apInfo{{Chip: "xiaomi", Band: "Wi-Fi hotspot", Enabled: runtime["AP_IFACE"] != "", SSID: runtime["SSID"], AuthMode: "Android SoftAP", MaxClient: max, Editable: false}},
+			"aps": []apInfo{{Chip: "xiaomi", Band: "Wi-Fi hotspot",
+				Enabled: runtime["AP_IFACE"] != "", SSID: c.HotspotSSID,
+				Password: c.HotspotPassword, AuthMode: "WPA2-PSK",
+				Hidden: c.HotspotHidden, MaxClient: max, MaxEdit: false, Editable: true}},
 			"max_supported": 32, "turbo": s.turboStatus(),
+			"usb": s.xiaomiUSBStatus(r.Context()),
 		})
 		return
 	}
@@ -111,6 +116,7 @@ func (s *server) handleWiFi(w http.ResponseWriter, r *http.Request) {
 			AuthMode:  str(e["AuthMode"]),
 			Hidden:    str(e["ApBroadcastDisabled"]) == "1",
 			MaxClient: str(e["ApMaxStationNumber"]),
+			MaxEdit:   true,
 			Editable:  true,
 		})
 	}
@@ -120,10 +126,6 @@ func (s *server) handleWiFi(w http.ResponseWriter, r *http.Request) {
 // handleSetWiFi changes one band's switch / SSID / password / limits. The request mirrors
 // what the vendor web UI sends (setAccessPointInfo in its service.js).
 func (s *server) handleSetWiFi(w http.ResponseWriter, r *http.Request) {
-	if s.platform == "xiaomi" {
-		writeErr(w, http.StatusNotImplemented, apiErr("wifi_android_managed", "Xiaomi hotspot settings are managed by Android; use the hotspot system settings"))
-		return
-	}
 	var in struct {
 		Chip     string `json:"chip"`
 		Enabled  bool   `json:"enabled"`
@@ -135,6 +137,46 @@ func (s *server) handleSetWiFi(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := readBody(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.platform == "xiaomi" {
+		if in.Chip != "xiaomi" {
+			writeErr(w, http.StatusBadRequest, apiErr("wifi_chip_unknown", "unknown Xiaomi hotspot"))
+			return
+		}
+		if len([]byte(in.SSID)) < 1 || len([]byte(in.SSID)) > 32 {
+			writeErr(w, http.StatusBadRequest, apiErr("ssid_length", "SSID must be 1-32 bytes"))
+			return
+		}
+		if len(in.Password) < 8 || len(in.Password) > 63 {
+			writeErr(w, http.StatusBadRequest, apiErr("wifi_password_length", "Wi-Fi password must be 8-63 characters"))
+			return
+		}
+		if in.MaxClients != 0 && in.MaxClients != 32 {
+			writeErr(w, http.StatusBadRequest, apiErr("max_clients_range", "Xiaomi router profile uses 32 clients", "max", 32))
+			return
+		}
+		if err := s.cfg.update(func(c *Config) {
+			c.HotspotSSID = in.SSID
+			c.HotspotPassword = in.Password
+			c.HotspotHidden = in.Hidden
+			c.AutoStartHotspot = in.Enabled
+		}); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		c := s.cfg.get()
+		if s.demo {
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		}
+		if err := startDetached("/system/bin/sh", filepath.Join(c.TurboDir, "scripts/wifi_turbo.sh"),
+			"wifi", boolFlag(in.Enabled), in.SSID, in.Password, boolFlag(in.Hidden)); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		log.Printf("Android hotspot enabled=%v ssid=%q hidden=%v", in.Enabled, in.SSID, in.Hidden)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		return
 	}
 	ctx := r.Context()
@@ -209,6 +251,34 @@ func (s *server) handleSetWiFi(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (s *server) handleSetUSB(w http.ResponseWriter, r *http.Request) {
+	if s.platform != "xiaomi" {
+		writeErr(w, http.StatusNotImplemented, apiErr("usb_tether_unavailable", "USB tethering is only available on Xiaomi integration"))
+		return
+	}
+	var in struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := readBody(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.cfg.update(func(c *Config) { c.AutoStartUSBTether = in.Enabled }); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !s.demo {
+		c := s.cfg.get()
+		if err := startDetached("/system/bin/sh", filepath.Join(c.TurboDir, "scripts/wifi_turbo.sh"),
+			"usb", boolFlag(in.Enabled)); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	log.Printf("Android USB tethering -> %v", in.Enabled)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (s *server) handleSetTurbo(w http.ResponseWriter, r *http.Request) {
 	if s.platform != "xiaomi" {
 		writeErr(w, http.StatusNotImplemented, apiErr("turbo_unavailable", "hotspot turbo is only available on Xiaomi integration"))
@@ -245,7 +315,7 @@ func (s *server) handleBoxRestart(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 			return
 		}
-		if err := startDetached(filepath.Join(c.NetProxyDir, "netproxyctl"), "service", "restart"); err != nil {
+		if err := startDetached(netproxyExecutable(c), "service", "restart"); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}

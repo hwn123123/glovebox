@@ -158,6 +158,9 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
   background-repeat: no-repeat;
 }
 .panel.pad { padding: 12px 14px; }
+.empty-state { display: grid; gap: 5px; color: var(--fg-2); }
+.empty-state b { color: var(--fg); }
+.empty-state span { font-size: .82rem; }
 .ph { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 14px; border-bottom: 1px dashed var(--line-2); }
 .ph .pi { color: var(--a); font-size: .8rem; font-weight: 700; min-width: 1.4em; display: inline-flex; }
 .ph .pi .ic { width: 15px; height: 15px; }
@@ -365,8 +368,17 @@ td .sub { display: block; color: var(--fg-2); font-size: .76rem; }
 
 /* ---------- device ---------- */
 .wifi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: var(--gap); }
+.kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 13px 24px; }
+.kv-grid > div { display: grid; gap: 3px; min-width: 0; }
+.kv-grid b { overflow-wrap: anywhere; }
 .wifi-form .pb { display: grid; gap: 14px; }
 .wifi-form .note { margin: 0; font-size: .8rem; color: var(--fg-2); }
+.wifi-form.xiaomi { grid-column: 1 / -1; }
+.wifi-form.xiaomi .pb { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.wifi-form.xiaomi .pb > .note,
+.wifi-form.xiaomi .pb > button[type="submit"] { grid-column: 1 / -1; }
+#page-device .grid { align-items: start; }
+.maint-status { margin: 0 0 12px; font-size: .82rem; overflow-wrap: anywhere; }
 .secure-steps { margin: 12px 0 0; }
 .secure-steps details { border-top: 1px dashed var(--line-2); padding: 10px 0; }
 .secure-steps summary { cursor: pointer; color: var(--fg-1); min-height: 28px; }
@@ -418,6 +430,11 @@ body.stale main { filter: saturate(.3) brightness(.8); transition: filter .4s; }
   .s4, .s6, .s8, .m-full { grid-column: 1 / -1; }
   .m-half { grid-column: span 3; }
   .kv.cols { grid-template-columns: auto 1fr auto 1fr; }
+}
+
+@media (max-width: 640px) {
+  .wifi-form.xiaomi .pb { grid-template-columns: 1fr; }
+  .wifi-form.xiaomi .pb > * { grid-column: 1 !important; }
 }
 
 /* portrait tablets, landscape phones: sidebar collapses to an icon rail */

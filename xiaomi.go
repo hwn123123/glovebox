@@ -7,6 +7,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -75,18 +77,63 @@ func readKV(path string) map[string]string {
 }
 
 var (
-	nrRSRPRe = regexp.MustCompile(`(?i)(?:ssRsrp|rsrp)\s*[=:]\s*(-?\d+)`)
-	nrSINRRe = regexp.MustCompile(`(?i)(?:ssSinr|ssRssnr|sinr)\s*[=:]\s*(-?\d+)`)
-	nrBandRe = regexp.MustCompile(`(?i)(?:band|bands?)\s*[=:]\s*\[?n?(\d+)`)
+	nrRSRPRe    = regexp.MustCompile(`(?i)\b(?:ssRsrp|rsrp)\s*[=:]\s*(-?\d+)`)
+	nrRSRQRe    = regexp.MustCompile(`(?i)\b(?:ssRsrq|rsrq)\s*[=:]\s*(-?\d+)`)
+	nrSINRRe    = regexp.MustCompile(`(?i)\b(?:ssSinr|ssRssnr|sinr)\s*[=:]\s*(-?\d+)`)
+	nrChannelRe = regexp.MustCompile(`(?i)\bmChannelNumber\s*[=:]\s*(\d+)`)
+	usbLinkRe   = regexp.MustCompile(`(?im)\b(?:connected|mConnected)\s*=\s*true\b`)
+	usbFuncRe   = regexp.MustCompile(`(?im)\bmUsbTetheringFunction\s*:\s*([A-Za-z0-9_-]+)`)
 )
 
-func firstMatch(re *regexp.Regexp, text string) string {
-	if m := re.FindStringSubmatch(text); len(m) > 1 {
-		if n, err := strconv.Atoi(m[1]); err == nil && n != 2147483647 && n != -2147483648 && n != 2147483647/1000 {
+func firstValidMatch(re *regexp.Regexp, text string, minValue, maxValue int) string {
+	for _, m := range re.FindAllStringSubmatch(text, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err == nil && n >= minValue && n <= maxValue {
 			return m[1]
 		}
 	}
 	return ""
+}
+
+func propValues(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, strings.TrimSpace(part))
+	}
+	return out
+}
+
+func firstActiveProp(raw string) string {
+	for _, value := range propValues(raw) {
+		if value != "" && !strings.EqualFold(value, "unknown") && !strings.EqualFold(value, "null") {
+			return value
+		}
+	}
+	return ""
+}
+
+func xiaomiSIM(raw string) (string, int) {
+	states := propValues(strings.ToUpper(raw))
+	for _, ready := range []string{"LOADED", "READY"} {
+		for i, state := range states {
+			if state == ready {
+				return "modem_init_complete", i + 1
+			}
+		}
+	}
+	for i, state := range states {
+		switch {
+		case strings.Contains(state, "PUK"):
+			return "modem_waitpuk", i + 1
+		case strings.Contains(state, "PIN"):
+			return "modem_waitpin", i + 1
+		}
+	}
+	return "modem_sim_undetected", 0
 }
 
 func signalBars(rsrp string) string {
@@ -108,7 +155,7 @@ func signalBars(rsrp string) string {
 	}
 }
 
-func firstWANIPv4(prefixes []string) string {
+func firstWANIPv4(prefixes []string) (string, string) {
 	ifs, _ := net.Interfaces()
 	for _, ifc := range ifs {
 		matched := false
@@ -125,16 +172,48 @@ func firstWANIPv4(prefixes []string) string {
 		for _, a := range addrs {
 			host, _, _ := strings.Cut(a.String(), "/")
 			if ip, err := netip.ParseAddr(host); err == nil && ip.Is4() && !ip.IsLoopback() {
-				return ip.String()
+				return ip.String(), ifc.Name
 			}
 		}
 	}
-	return ""
+	return "", ""
+}
+
+func interfaceIPv4s(name string) []string {
+	if name == "" {
+		return nil
+	}
+	ifc, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil
+	}
+	addrs, _ := ifc.Addrs()
+	out := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		host, _, _ := strings.Cut(a.String(), "/")
+		if ip, err := netip.ParseAddr(host); err == nil && ip.Is4() && !ip.IsLoopback() {
+			out = append(out, a.String())
+		}
+	}
+	return out
+}
+
+func wifiChannel(freq int) int {
+	switch {
+	case freq == 2484:
+		return 14
+	case freq >= 2412 && freq <= 2472:
+		return (freq - 2407) / 5
+	case freq >= 5000 && freq <= 5895:
+		return (freq - 5000) / 5
+	case freq >= 5955 && freq <= 7115:
+		return (freq - 5950) / 5
+	}
+	return 0
 }
 
 func (s *server) xiaomiClients(ctx context.Context) []client {
-	dev := s.cfg.get().LANDev
-	out, err := run(ctx, 3*time.Second, "ip", "-4", "neigh", "show", "dev", dev)
+	out, err := run(ctx, 3*time.Second, "ip", "-4", "neigh", "show")
 	if err != nil {
 		return nil
 	}
@@ -143,6 +222,16 @@ func (s *server) xiaomiClients(ctx context.Context) []client {
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 5 || seen[f[0]] {
+			continue
+		}
+		dev := ""
+		for i := 1; i+1 < len(f); i++ {
+			if f[i] == "dev" {
+				dev = f[i+1]
+				break
+			}
+		}
+		if !xiaomiDownstream(dev, s.cfg.get().LANDev) {
 			continue
 		}
 		ip, err := netip.ParseAddr(f[0])
@@ -160,9 +249,130 @@ func (s *server) xiaomiClients(ctx context.Context) []client {
 			continue
 		}
 		seen[f[0]] = true
-		clients = append(clients, client{Name: "Hotspot client", IP: f[0], MAC: mac, Via: "Wi-Fi"})
+		via := "Wi-Fi"
+		if strings.HasPrefix(dev, "usb") || strings.HasPrefix(dev, "rndis") || strings.HasPrefix(dev, "ncm") {
+			via = "USB"
+		}
+		clients = append(clients, client{Name: via + " client", IP: f[0], MAC: mac, Via: via})
 	}
 	return clients
+}
+
+func xiaomiDownstream(dev, wifiDev string) bool {
+	return dev == wifiDev || strings.HasPrefix(dev, "softap") || strings.HasPrefix(dev, "ap_br_") ||
+		strings.HasPrefix(dev, "usb") || strings.HasPrefix(dev, "rndis") || strings.HasPrefix(dev, "ncm")
+}
+
+func boolFlag(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
+}
+
+// applyXiaomiRouter delegates all hotspot and USB changes to Android's own
+// WifiManager/TetheringManager bridge. NetworkStack therefore remains the sole
+// DHCP/NAT owner and changes also appear in the system Settings UI.
+func (s *server) applyXiaomiRouter(ctx context.Context, action string, args ...string) error {
+	c := s.cfg.get()
+	cmdArgs := []string{filepath.Join(c.TurboDir, "scripts/wifi_turbo.sh"), action}
+	cmdArgs = append(cmdArgs, args...)
+	out, err := run(ctx, 60*time.Second, "/system/bin/sh", cmdArgs...)
+	if err != nil {
+		return fmt.Errorf("Android tethering %s: %w: %s", action, err, strings.TrimSpace(out))
+	}
+	log.Printf("Android tethering %s: %s", action, strings.TrimSpace(out))
+	return nil
+}
+
+func (s *server) bootXiaomiRouter(ctx context.Context) {
+	c := s.cfg.get()
+	// The Magisk supervisor can restart Glovebox during an upgrade or after a
+	// crash. Auto-start belongs to the Android boot lifecycle, not every server
+	// process start: reapplying a SoftApConfiguration can briefly drop clients.
+	// A boot ID marker keeps retries within the same boot idempotent while still
+	// applying the saved hotspot/USB policy after the next device reboot.
+	bootID := readTrim("/proc/sys/kernel/random/boot_id")
+	marker := filepath.Join(c.TurboDir, "state/router_boot_id")
+	if bootID != "" && readTrim(marker) == bootID {
+		log.Printf("Android tethering already initialized for this boot")
+		return
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		err := s.applyXiaomiRouter(ctx, "boot", c.HotspotSSID, c.HotspotPassword,
+			boolFlag(c.HotspotHidden), boolFlag(c.AutoStartHotspot), boolFlag(c.AutoStartUSBTether))
+		if err == nil {
+			if bootID != "" {
+				if err := os.WriteFile(marker, []byte(bootID+"\n"), 0600); err != nil {
+					log.Printf("write router boot marker: %v", err)
+				}
+			}
+			return
+		}
+		log.Printf("router auto-start attempt %d/3: %v", attempt, err)
+		if attempt == 3 {
+			return
+		}
+		timer := time.NewTimer(time.Duration(attempt*10) * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *server) xiaomiUSBStatus(ctx context.Context) map[string]any {
+	c := s.cfg.get()
+	out, _ := run(ctx, 4*time.Second, "dumpsys", "tethering")
+	iface := ""
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[1] == "-" && fields[2] == "TetheredState" &&
+			(strings.HasPrefix(fields[0], "usb") || strings.HasPrefix(fields[0], "rndis") || strings.HasPrefix(fields[0], "ncm")) {
+			iface = fields[0]
+			break
+		}
+	}
+	usbDump, _ := run(ctx, 4*time.Second, "dumpsys", "usb")
+	connected := usbLinkRe.MatchString(usbDump)
+	if !connected {
+		state := strings.ToUpper(readTrim("/sys/class/android_usb/android0/state"))
+		connected = state == "CONNECTED" || state == "CONFIGURED"
+	}
+	function := ""
+	if m := usbFuncRe.FindStringSubmatch(out); len(m) > 1 {
+		function = strings.ToUpper(m[1])
+	}
+	if function == "" && iface != "" {
+		switch {
+		case strings.HasPrefix(iface, "ncm") || strings.HasPrefix(iface, "usb"):
+			function = "NCM"
+		case strings.HasPrefix(iface, "rndis"):
+			function = "RNDIS"
+		}
+	}
+	management := strings.TrimSuffix(c.AliasAddr, "/32")
+	nativeAddress := ""
+	for _, addr := range interfaceIPv4s(iface) {
+		if !strings.HasPrefix(addr, management+"/") {
+			nativeAddress = addr
+			break
+		}
+	}
+	return map[string]any{
+		"enabled":            c.AutoStartUSBTether,
+		"active":             iface != "",
+		"interface":          iface,
+		"connected":          connected,
+		"function":           function,
+		"native_address":     nativeAddress,
+		"management_address": management,
+		"dhcp":               iface != "",
+		"nat":                iface != "",
+		"mode":               "Android USB tethering",
+	}
 }
 
 // xiaomiStatus returns the same normalized fields as the original ZTE adapter so the rest of
@@ -171,24 +381,19 @@ func (s *server) xiaomiStatus(ctx context.Context) (map[string]any, error) {
 	c := s.cfg.get()
 	runtime := readKV(filepath.Join(c.TurboDir, "state/runtime.status"))
 	telephony, _ := run(ctx, 4*time.Second, "dumpsys", "telephony.registry")
-	rsrp, sinr := firstMatch(nrRSRPRe, telephony), firstMatch(nrSINRRe, telephony)
-	rawNet := strings.ToUpper(getprop("gsm.network.type"))
+	rsrp := firstValidMatch(nrRSRPRe, telephony, -160, -30)
+	rsrq := firstValidMatch(nrRSRQRe, telephony, -50, 20)
+	sinr := firstValidMatch(nrSINRRe, telephony, -30, 80)
+	arfcn := firstValidMatch(nrChannelRe, telephony, 1, 4000000)
+	rawNet := strings.ToUpper(firstActiveProp(getprop("gsm.network.type")))
 	netType := rawNet
 	if strings.Contains(rawNet, "NR") {
 		netType = "SA"
 	} else if strings.Contains(rawNet, "LTE") {
 		netType = "LTE"
 	}
-	wanIP := firstWANIPv4(c.WANPrefixes)
-	sim := strings.ToUpper(getprop("gsm.sim.state"))
-	modemState := "modem_init_complete"
-	if sim == "" || strings.Contains(sim, "ABSENT") || strings.Contains(sim, "UNKNOWN") {
-		modemState = "modem_sim_undetected"
-	} else if strings.Contains(sim, "PIN") {
-		modemState = "modem_waitpin"
-	} else if strings.Contains(sim, "PUK") {
-		modemState = "modem_waitpuk"
-	}
+	wanIP, wanIface := firstWANIPv4(c.WANPrefixes)
+	modemState, simSlot := xiaomiSIM(getprop("gsm.sim.state"))
 	ppp := "disconnected"
 	if wanIP != "" {
 		ppp = "connected"
@@ -197,24 +402,24 @@ func (s *server) xiaomiStatus(ctx context.Context) (map[string]any, error) {
 	if runtime["AP_IFACE"] != "" {
 		wifiOn = "1"
 	}
-	band := firstMatch(nrBandRe, telephony)
-	if band == "0" {
-		band = ""
-	}
-	if band != "" && strings.Contains(rawNet, "NR") {
-		band = "n" + band
-	}
 	cl := s.xiaomiClients(ctx)
 	stations := make([]any, 0, len(cl))
 	for _, item := range cl {
-		stations = append(stations, map[string]any{"hostname": item.Name, "ip_addr": item.IP, "mac_addr": item.MAC})
+		stations = append(stations, map[string]any{"hostname": item.Name, "ip_addr": item.IP, "mac_addr": item.MAC, "via": item.Via})
+	}
+	var sessionRX, sessionTX uint64
+	if counters, ok := readNetDev()[wanIface]; ok {
+		sessionRX, sessionTX = counters[0], counters[1]
 	}
 	return map[string]any{
 		"network_type": netType, "signalbar": signalBars(rsrp),
-		"network_provider_fullname": getprop("gsm.operator.alpha"),
+		"network_provider_fullname": firstActiveProp(getprop("gsm.operator.alpha")),
 		"ppp_status":                ppp, "modem_main_state": modemState, "simcard_roam": "Home",
 		"SSID1": runtime["SSID"], "wifi_onoff_state": wifiOn,
-		"Z5g_rsrp": rsrp, "Z5g_SINR": sinr, "nr5g_action_band": band,
+		"Z5g_rsrp": rsrp, "Z5g_RSRQ": rsrq, "Z5g_SINR": sinr,
+		"nr_arfcn": arfcn, "sim_slot": simSlot,
+		"mccmnc": firstActiveProp(getprop("gsm.operator.numeric")), "wan_iface": wanIface,
+		"monthly_rx_bytes": sessionRX, "monthly_tx_bytes": sessionTX, "usage_scope": "boot",
 		"wan_ipaddr": wanIP, "wa_inner_version": getprop("ro.build.version.incremental"),
 		"station_list": stations, "lan_station_list": []any{},
 	}, nil
@@ -224,9 +429,11 @@ func (s *server) turboStatus() map[string]any {
 	c := s.cfg.get()
 	r := readKV(filepath.Join(c.TurboDir, "state/runtime.status"))
 	enabled := strings.TrimSpace(readTrim(filepath.Join(c.TurboDir, "turbo_status"))) != "0"
+	freq, _ := strconv.Atoi(r["FREQUENCY"])
 	return map[string]any{
 		"enabled": enabled, "active": r["AP_IFACE"] != "", "interface": r["AP_IFACE"],
 		"frequency": r["FREQUENCY"], "standard": r["WIFI_STANDARD"],
+		"channel": wifiChannel(freq), "bssid": r["BSSID"],
 		"ax": r["AX"] == "true", "be": r["BE"] == "true",
 		"offload": r["OFFLOAD"] == "true", "country": r["COUNTRY_CODE"],
 		"fixed_address": strings.TrimSuffix(c.AliasAddr, "/32"),

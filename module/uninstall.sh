@@ -4,5 +4,8 @@
 if [ -x /data/adb/modules/glovebox/scripts/wifi_turbo.sh ]; then
   sh /data/adb/modules/glovebox/scripts/wifi_turbo.sh cleanup >/dev/null 2>&1 || true
 fi
+if [ -x /data/adb/modules/glovebox/scripts/netproxy.sh ]; then
+  sh /data/adb/modules/glovebox/scripts/netproxy.sh stop >/dev/null 2>&1 || true
+fi
 rm -f /data/adb/modules/wifi_ap_turbo/disable
 rm -f /data/adb/glovebox/supervisor.pid

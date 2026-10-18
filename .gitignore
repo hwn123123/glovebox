@@ -1,8 +1,17 @@
 /dist/
+/module/.helper-build/
 /overlay/build/
 /overlay/*.apk
 /overlay/*.idsig
 /overlay/*.keystore
+/overlay/tethering/build/
+/overlay/tethering/*.idsig
+/overlay/tethering/*.keystore
+/overlay/ethernet/build/
+/overlay/ethernet/*.idsig
+/overlay/ethernet/*.keystore
+/overlay/ethernet/unsigned.apk
+/overlay/ethernet/aligned.apk
 *.tmp
 .DS_Store
 /glovebox

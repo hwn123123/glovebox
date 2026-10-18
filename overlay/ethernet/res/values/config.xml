@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- usb0 is a downstream tethering interface on the Xiaomi 14 Pro. Keep
+         only conventional Ethernet devices in EthernetTracker's client set. -->
+    <string name="config_ethernet_iface_regex">eth\\d+</string>
+</resources>

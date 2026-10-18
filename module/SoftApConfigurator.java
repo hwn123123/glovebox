@@ -21,7 +21,15 @@ import java.util.concurrent.TimeUnit;
  * so direct file edits are not reliable. This helper calls WifiManager instead.
  */
 public final class SoftApConfigurator {
+    private static final int TETHERING_WIFI = 0;
+    private static final int TETHERING_USB = 1;
+    private static final int TETHERING_NCM = 4;
     private static Object sContext;
+
+    private static final class TetherResult {
+        private final CountDownLatch latch = new CountDownLatch(1);
+        private int error = -1;
+    }
 
     private SoftApConfigurator() {}
 
@@ -37,10 +45,22 @@ public final class SoftApConfigurator {
 
             if ("enable".equals(action)) {
                 enable(wifiManager, backupPath, bssid);
+            } else if ("configure".equals(action)) {
+                if (args.length < 6) usage();
+                configure(wifiManager, backupPath, bssid, args[3], args[4],
+                        Boolean.parseBoolean(args[5]));
             } else if ("restore".equals(action)) {
                 restore(wifiManager, backupPath);
             } else if ("restart".equals(action)) {
                 restartWifiTetheringIfActive();
+            } else if ("start-wifi".equals(action)) {
+                startTethering(TETHERING_WIFI);
+            } else if ("stop-wifi".equals(action)) {
+                stopTethering(TETHERING_WIFI);
+            } else if ("start-usb".equals(action)) {
+                startUsbTethering();
+            } else if ("stop-usb".equals(action)) {
+                stopUsbTethering();
             } else if ("status".equals(action)) {
                 printStatus(getConfig(wifiManager));
             } else {
@@ -53,7 +73,9 @@ public final class SoftApConfigurator {
     }
 
     private static void usage() {
-        System.err.println("usage: SoftApConfigurator enable|restore|restart|status BACKUP [BSSID]");
+        System.err.println("usage: SoftApConfigurator "
+                + "enable|restore|restart|status|start-wifi|stop-wifi|start-usb|stop-usb "
+                + "BACKUP [BSSID] | configure BACKUP BSSID SSID PASSWORD HIDDEN");
         System.exit(2);
     }
 
@@ -92,8 +114,39 @@ public final class SoftApConfigurator {
         final Constructor<?> copyCtor = builderClass.getConstructor(configClass);
         final Object builder = copyCtor.newInstance(original);
 
+        applyRouterTuning(builder, bssid);
+
+        applyConfiguration(wifiManager, original, builder, true);
+    }
+
+    private static void configure(Object wifiManager, String backupPath, String bssid,
+            String ssid, String passphrase, boolean hidden) throws Exception {
+        final Object original = getConfig(wifiManager);
+        if (original == null) throw new IllegalStateException("SoftApConfiguration unavailable");
+        if (!backupPath.isEmpty() && !new File(backupPath).exists()) {
+            writeParcelable(original, backupPath);
+        }
+
+        final Class<?> configClass = Class.forName("android.net.wifi.SoftApConfiguration");
+        final Class<?> builderClass = Class.forName(
+                "android.net.wifi.SoftApConfiguration$Builder");
+        final Constructor<?> copyCtor = builderClass.getConstructor(configClass);
+        final Object builder = copyCtor.newInstance(original);
+
+        invoke(builder, "setSsid", new Class<?>[]{String.class}, ssid);
+        invoke(builder, "setPassphrase", new Class<?>[]{String.class, int.class},
+                passphrase, 1 /* SECURITY_TYPE_WPA2_PSK */);
+        invoke(builder, "setHiddenSsid", new Class<?>[]{boolean.class}, hidden);
+        applyRouterTuning(builder, bssid);
+
+        applyConfiguration(wifiManager, original, builder, true);
+    }
+
+    private static void applyRouterTuning(Object builder, String bssid) throws Exception {
         invoke(builder, "setIeee80211axEnabled", new Class<?>[]{boolean.class}, true);
-        invoke(builder, "setIeee80211beEnabled", new Class<?>[]{boolean.class}, true);
+        // Xiaomi 14 Pro's current SoftAP capability is Wi-Fi 6. HyperOS accepts
+        // a BE=true write but normalizes it back to false, which previously made
+        // every idempotency check look changed and restarted the AP forever.
         invoke(builder, "setMaxNumberOfClients", new Class<?>[]{int.class}, 32);
         invoke(builder, "setAutoShutdownEnabled", new Class<?>[]{boolean.class}, false);
 
@@ -108,7 +161,13 @@ public final class SoftApConfigurator {
             invoke(builder, "setMacRandomizationSetting", new Class<?>[]{int.class}, 0);
             invoke(builder, "setBssid", new Class<?>[]{macClass}, mac);
         }
+    }
 
+    private static void applyConfiguration(Object wifiManager, Object original,
+            Object builder, boolean restartActive) throws Exception {
+        final Class<?> configClass = Class.forName("android.net.wifi.SoftApConfiguration");
+        final Class<?> builderClass = Class.forName(
+                "android.net.wifi.SoftApConfiguration$Builder");
         final Object updated = builderClass.getMethod("build").invoke(builder);
         if (sameManagedFields(original, updated)) {
             System.out.println("RESULT=UNCHANGED");
@@ -123,7 +182,7 @@ public final class SoftApConfigurator {
             throw new IllegalStateException("WifiManager rejected SoftApConfiguration");
         }
         System.out.println("RESULT=UPDATED");
-        restartWifiTetheringIfActive();
+        if (restartActive) restartWifiTetheringIfActive();
         printStatus(getConfig(wifiManager));
     }
 
@@ -146,67 +205,123 @@ public final class SoftApConfigurator {
     }
 
     private static void restartWifiTetheringIfActive() throws Exception {
+        if (!isTethered(TETHERING_WIFI)) {
+            System.out.println("TETHER_RESTART=NOT_ACTIVE");
+            return;
+        }
+        stopTethering(TETHERING_WIFI);
+        startTethering(TETHERING_WIFI);
+        System.out.println("TETHER_RESTART=OK");
+    }
+
+    private static Object getTetheringManager() throws Exception {
         final Class<?> contextClass = Class.forName("android.content.Context");
         final Class<?> tetherClass = Class.forName("android.net.TetheringManager");
         final Object tether = contextClass.getMethod("getSystemService", Class.class)
                 .invoke(sContext, tetherClass);
-        if (tether == null || !isWifiTethered(tether, tetherClass)) {
-            System.out.println("TETHER_RESTART=NOT_ACTIVE");
-            return;
-        }
+        if (tether == null) throw new IllegalStateException("TetheringManager unavailable");
+        return tether;
+    }
 
-        tetherClass.getMethod("stopTethering", int.class).invoke(tether, 0);
-        for (int i = 0; i < 20 && isWifiTethered(tether, tetherClass); i++) {
+    private static void stopTethering(int type) throws Exception {
+        final Object tether = getTetheringManager();
+        final Class<?> tetherClass = Class.forName("android.net.TetheringManager");
+        tetherClass.getMethod("stopTethering", int.class).invoke(tether, type);
+        for (int i = 0; i < 30 && isTethered(type); i++) {
             Thread.sleep(200);
         }
+        System.out.println("TETHER_STOP=" + (isTethered(type) ? "PENDING" : "OK"));
+    }
+
+    private static void startTethering(int type) throws Exception {
+        if (isTethered(type)) {
+            System.out.println("TETHER_START=ALREADY_ACTIVE");
+            return;
+        }
+        final Object tether = getTetheringManager();
+        final Class<?> tetherClass = Class.forName("android.net.TetheringManager");
 
         final Class<?> requestClass = Class.forName(
                 "android.net.TetheringManager$TetheringRequest");
         final Class<?> requestBuilderClass = Class.forName(
                 "android.net.TetheringManager$TetheringRequest$Builder");
         final Object requestBuilder = requestBuilderClass.getConstructor(int.class)
-                .newInstance(0);
+                .newInstance(type);
         tryInvoke(requestBuilder, "setExemptFromEntitlementCheck",
                 new Class<?>[]{boolean.class}, true);
         final Object request = requestBuilderClass.getMethod("build").invoke(requestBuilder);
 
         final Class<?> callbackClass = Class.forName(
                 "android.net.TetheringManager$StartTetheringCallback");
-        final CountDownLatch latch = new CountDownLatch(1);
-        final int[] error = new int[]{-1};
+        final TetherResult result = new TetherResult();
         final Object callback = Proxy.newProxyInstance(
                 callbackClass.getClassLoader(), new Class<?>[]{callbackClass},
                 (proxy, method, args) -> {
                     if ("onTetheringStarted".equals(method.getName())) {
-                        error[0] = 0;
-                        latch.countDown();
+                        result.error = 0;
+                        result.latch.countDown();
                     } else if ("onTetheringFailed".equals(method.getName())) {
-                        error[0] = args != null && args.length > 0
+                        result.error = args != null && args.length > 0
                                 ? ((Integer) args[0]) : -2;
-                        latch.countDown();
+                        result.latch.countDown();
                     }
                     return null;
                 });
         final Executor directExecutor = Runnable::run;
         tetherClass.getMethod("startTethering", requestClass, Executor.class, callbackClass)
                 .invoke(tether, request, directExecutor, callback);
-        if (!latch.await(15, TimeUnit.SECONDS)) {
-            throw new IllegalStateException("Timed out restarting Wi-Fi tethering");
+        if (!result.latch.await(15, TimeUnit.SECONDS)) {
+            throw new IllegalStateException("Timed out starting tethering type " + type);
         }
-        if (error[0] != 0) {
-            throw new IllegalStateException("Wi-Fi tethering restart failed: " + error[0]);
+        if (result.error != 0) {
+            throw new IllegalStateException("tethering start failed for type "
+                    + type + ": " + result.error);
         }
-        System.out.println("TETHER_RESTART=OK");
-        Thread.sleep(1500);
+        System.out.println("TETHER_START=OK");
+        Thread.sleep(type == 0 ? 1500 : 500);
     }
 
-    private static boolean isWifiTethered(Object tether, Class<?> tetherClass) throws Exception {
+    private static void startUsbTethering() throws Exception {
+        if (isTethered(TETHERING_USB)) {
+            System.out.println("TETHER_START=ALREADY_ACTIVE");
+            System.out.println("USB_TETHER=ACTIVE");
+            return;
+        }
+        // Clear stale requests even when their gadget interface has already
+        // disappeared. Otherwise NetworkStack returns DUPLICATE_REQUEST.
+        stopTethering(TETHERING_NCM);
+        stopTethering(TETHERING_USB);
+        Thread.sleep(500);
+        // NetworkStack's TETHERING_NCM request is intentionally local-only.
+        // The module RRO selects NCM as the physical function for the normal
+        // TETHERING_USB request, which keeps Android DHCP, upstream and NAT.
+        startTethering(TETHERING_USB);
+        System.out.println("USB_TETHER=NCM_INTERNET");
+    }
+
+    private static void stopUsbTethering() throws Exception {
+        stopTethering(TETHERING_NCM);
+        stopTethering(TETHERING_USB);
+        System.out.println("USB_TETHER=OFF");
+    }
+
+    private static boolean isTethered(int type) throws Exception {
+        final Object tether = getTetheringManager();
+        final Class<?> tetherClass = Class.forName("android.net.TetheringManager");
         final String[] ifaces = (String[]) tetherClass.getMethod("getTetheredIfaces")
                 .invoke(tether);
         if (ifaces == null) return false;
         for (String iface : ifaces) {
-            if (iface != null && (iface.startsWith("wlan")
+            if (iface == null) continue;
+            if (type == TETHERING_WIFI && (iface.startsWith("wlan")
                     || iface.startsWith("softap") || iface.startsWith("ap_br_"))) {
+                return true;
+            }
+            if (type == TETHERING_USB && (iface.startsWith("rndis")
+                    || iface.startsWith("ncm") || iface.startsWith("usb"))) {
+                return true;
+            }
+            if (type == TETHERING_NCM && (iface.startsWith("ncm") || iface.startsWith("usb"))) {
                 return true;
             }
         }
@@ -214,14 +329,18 @@ public final class SoftApConfigurator {
     }
 
     private static boolean sameManagedFields(Object a, Object b) throws Exception {
-        return bool(a, "isIeee80211axEnabled") == bool(b, "isIeee80211axEnabled")
-                && bool(a, "isIeee80211beEnabled") == bool(b, "isIeee80211beEnabled")
+        return string(a, "getSsid").equals(string(b, "getSsid"))
+                && string(a, "getPassphrase").equals(string(b, "getPassphrase"))
+                && bool(a, "isHiddenSsid") == bool(b, "isHiddenSsid")
+                && bool(a, "isIeee80211axEnabled") == bool(b, "isIeee80211axEnabled")
                 && integer(a, "getMaxNumberOfClients") == integer(b, "getMaxNumberOfClients")
                 && string(a, "getBssid").equals(string(b, "getBssid"))
                 && listSize(a, "getVendorElements") == listSize(b, "getVendorElements");
     }
 
     private static void printStatus(Object config) throws Exception {
+        System.out.println("SSID=" + string(config, "getSsid"));
+        System.out.println("HIDDEN=" + bool(config, "isHiddenSsid"));
         System.out.println("AX=" + bool(config, "isIeee80211axEnabled"));
         System.out.println("BE=" + bool(config, "isIeee80211beEnabled"));
         System.out.println("MAX_CLIENTS=" + integer(config, "getMaxNumberOfClients"));

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Xiaomi 14 Pro exposes the macOS-compatible NCM gadget as usb0, while its
+     product overlay only recognizes ncm\d. Match the actual interface name so
+     Android NetworkStack remains the owner of DHCP, NAT and tethering. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.glovebox.tethering.overlay"
+    android:versionCode="1"
+    android:versionName="1">
+    <uses-sdk android:minSdkVersion="36" android:targetSdkVersion="36" />
+    <overlay
+        android:targetPackage="com.android.networkstack.tethering"
+        android:targetName="TetheringConfig"
+        android:isStatic="true"
+        android:priority="900" />
+    <application android:hasCode="false" />
+</manifest>

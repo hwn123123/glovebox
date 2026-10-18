@@ -19,7 +19,15 @@ if [[ -n $unformatted ]]; then
 fi
 go vet ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.version=$ver" -o "$stage/bin/glovebox" .
+
+# Rebuild the Android system-service bridge when SDK 36 is available. The
+# checked-in jar remains the reproducible fallback for environments without it.
+bash module/build_helper.sh
 cp -R module/. "$stage/"
+# Java sources and helper build output are development inputs, not Magisk
+# runtime files. Keep them in the repository but never ship them to the phone.
+rm -rf "$stage/.helper-build"
+rm -f "$stage/SoftApConfigurator.java" "$stage/build_helper.sh"
 
 # Runtime resource overlay that raises the SoftAP client limit. Magisk mounts the module's
 # system/vendor onto /vendor, so it lands in /vendor/overlay.
@@ -31,6 +39,28 @@ if [[ -z ${NO_OVERLAY:-} ]]; then
     mkdir -p "$stage/system/vendor/overlay/GloveboxWifiOverlay"
     cp overlay/GloveboxWifiOverlay.apk "$stage/system/vendor/overlay/GloveboxWifiOverlay/"
     chmod 644 "$stage/system/vendor/overlay/GloveboxWifiOverlay/GloveboxWifiOverlay.apk"
+  fi
+  if [[ ! -f overlay/tethering/GloveboxTetheringOverlay.apk ]] \
+      && ! overlay/tethering/build.sh; then
+    echo "warning: Android SDK/JDK unavailable; skipping optional USB NCM overlay" >&2
+  fi
+  if [[ -f overlay/tethering/GloveboxTetheringOverlay.apk ]]; then
+    mkdir -p "$stage/system/product/overlay/GloveboxTetheringOverlay"
+    cp overlay/tethering/GloveboxTetheringOverlay.apk \
+      "$stage/system/product/overlay/GloveboxTetheringOverlay/"
+    chmod 644 \
+      "$stage/system/product/overlay/GloveboxTetheringOverlay/GloveboxTetheringOverlay.apk"
+  fi
+  if [[ ! -f overlay/ethernet/GloveboxEthernetOverlay.apk ]] \
+      && ! overlay/ethernet/build.sh; then
+    echo "warning: Android SDK/JDK unavailable; skipping optional Ethernet ownership overlay" >&2
+  fi
+  if [[ -f overlay/ethernet/GloveboxEthernetOverlay.apk ]]; then
+    mkdir -p "$stage/system/product/overlay/GloveboxEthernetOverlay"
+    cp overlay/ethernet/GloveboxEthernetOverlay.apk \
+      "$stage/system/product/overlay/GloveboxEthernetOverlay/"
+    chmod 644 \
+      "$stage/system/product/overlay/GloveboxEthernetOverlay/GloveboxEthernetOverlay.apk"
   fi
 fi
 

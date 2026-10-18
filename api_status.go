@@ -162,7 +162,11 @@ func parseClients(m map[string]any) []client {
 			if e == nil {
 				continue
 			}
-			out = append(out, client{Name: str(e["hostname"]), IP: str(e["ip_addr"]), MAC: str(e["mac_addr"]), Via: via})
+			entryVia := via
+			if detected := str(e["via"]); detected != "" {
+				entryVia = detected
+			}
+			out = append(out, client{Name: str(e["hostname"]), IP: str(e["ip_addr"]), MAC: str(e["mac_addr"]), Via: entryVia})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].IP < out[j].IP })
@@ -198,15 +202,23 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"label":        netLabel(str(z["network_type"])),
 			"signalbar":    num(z["signalbar"]),
 			"rsrp":         rsrp,
+			"rsrq":         str(z["Z5g_RSRQ"]),
 			"sinr":         sinr,
 			"band":         band,
+			"arfcn":        str(z["nr_arfcn"]),
+			"sim_slot":     num(z["sim_slot"]),
+			"mccmnc":       str(z["mccmnc"]),
 			"connected":    strings.Contains(ppp, "connected") && !strings.Contains(ppp, "disconnected"),
 			"ppp_status":   ppp,
 			"sim":          simState(str(z["modem_main_state"])),
 			"roaming":      str(z["simcard_roam"]),
 			"wan_ip":       str(z["wan_ipaddr"]),
+			"wan_iface":    str(z["wan_iface"]),
 		}
-		out["month"] = map[string]any{"rx": num(z["monthly_rx_bytes"]), "tx": num(z["monthly_tx_bytes"])}
+		out["month"] = map[string]any{
+			"rx": num(z["monthly_rx_bytes"]), "tx": num(z["monthly_tx_bytes"]),
+			"scope": str(z["usage_scope"]),
+		}
 		cl := parseClients(z)
 		out["clients"] = len(cl)
 		out["client_list"] = cl
@@ -232,8 +244,10 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if s.platform == "xiaomi" {
 		if st, err := s.netproxyStatus(mctx); err != nil {
-			errs["mihomo"] = err.Error()
+			errs["proxy"] = err.Error()
 		} else {
+			proxy["state"] = st.State
+			proxy["error"] = st.Error
 			proxy["running"] = st.State == "ready" || st.State == "started"
 			proxy["version"] = "NetProxy / " + st.ConfiguredBackend
 			proxy["mode"] = formatNetproxyMode(st.OutboundMode)

@@ -10,7 +10,8 @@
 
 ![概览](docs/screenshots/zh-CN/overview.png)
 
-- **单个静态二进制**，网页内嵌，没有运行时依赖，打包成 Magisk 模块。
+- **一个自包含的 Magisk 模块**，内含 Glovebox 网页、Android 系统桥接和 NetProxy/sing-box，
+  不再需要第二个管理模块或独立 WebUI。
 - **基于原厂系统**：支持 ZTE goform，以及小米 14 Pro / HyperOS 的 Android 热点 API、NetProxy
   root CLI 和 `/proc`、`/sys`，原厂网页和应用照常可用。
 - **可安装为应用（PWA）**，桌面、平板、手机（横竖屏）和车机等嵌入式浏览器都有对应布局；
@@ -23,8 +24,8 @@
 | 页面 | 内容 |
 | --- | --- |
 | 概览 | WAN 实时吞吐曲线、信号（RSRP/SINR/频段）及历史、出口节点和代理链、Tailscale 连通性探测、本月流量、电量/CPU/内存/温度、已连接设备 |
-| 代理 | mihomo 或 NetProxy 分组和节点、切换节点、测速、规则/全局/直连模式、更新订阅、代理状态和流量汇总 |
-| 设备 | 小米 AP Turbo 状态、固定 `192.168.88.1` 管理地址、Wi-Fi 6/32 台热点增强、已连接设备、HTTPS 与安装指引、重启代理、重启设备、校正设备时间、控制台密码、主题和语言 |
+| 代理 | mihomo 或内置 NetProxy 分组和节点、添加/启用/删除订阅、切换节点、测速、规则/全局/直连模式、代理状态和流量汇总 |
+| 设备 | Android 系统热点和 USB 共享、AP Turbo 状态、固定 `192.168.88.1` 管理地址、SSID/密码和 Wi-Fi 6/32 台热点增强、已连接设备、HTTPS 与安装指引、重启代理、重启设备、校正设备时间、控制台密码、主题和语言 |
 | 日志 | mihomo、Box for Root、Glovebox、Android logcat；级别筛选、grep 高亮、跟随/暂停、自动换行 |
 
 键盘：`1`–`4` 切换页面，`/` 聚焦筛选框。
@@ -49,7 +50,8 @@ HyperOS Android 16。和硬件打交道的部分都封装在几个适配器里�
 - 用 [Magisk](https://github.com/topjohnwu/Magisk) Root
 - ZTE 可选：[Box for Root](https://github.com/taamarin/box_for_magisk) 运行 mihomo，external-controller
   监听 `127.0.0.1:9091`
-- 小米 14 Pro：直接读取已安装 NetProxy 的 `netproxyctl`；Glovebox 不复制或修改 NetProxy 的订阅和 sing-box 配置。
+- 小米 14 Pro：Glovebox 内置 NetProxy 8.6.1 和 sing-box。首次启动会停止原来的独立 NetProxy 模块，
+  并把它移到 Magisk 有效模块目录之外留作回退备份。
 
 ## 安装
 
@@ -61,7 +63,7 @@ HyperOS Android 16。和硬件打交道的部分都封装在几个适配器里�
    ```
 
 3. 连上热点，打开 **http://192.168.88.1:80**。小米 14 Pro 的集成 AP 控制器会把这个地址固定在热点接口上，
-   80 端口只由 Glovebox 管理后台使用。
+   默认启动 `nwrt` / `1234567890`，同时开启 Android USB 网络共享；管理 WebUI 只保留 Glovebox。
 
 想用域名访问，就把 `glovebox.lan` 解析到 `192.168.88.1`，比如在 mihomo 配置里：
 
@@ -109,7 +111,9 @@ echo '{"tailscale_proxy":"Tailscale","tailscale_probe":"http://100.64.0.1/"}' \
 | `mihomo_api`, `mihomo_secret`, `mihomo_insecure` | `https://127.0.0.1:9091` | mihomo 控制接口（旧 ZTE；小米使用 NetProxy CLI） |
 | `main_group` | 第一个可见的 Selector | 概览页显示的代理分组 |
 | `box_dir` | `/data/adb/box` | Box for Root 目录（日志、重启脚本） |
-| `netproxy_dir`, `turbo_dir` | `/data/adb/modules/netproxy`、`/data/adb/modules/glovebox` | 小米 NetProxy 和集成 AP 控制器目录 |
+| `netproxy_dir`, `turbo_dir` | `/data/adb/modules/glovebox/netproxy`、`/data/adb/modules/glovebox` | 内置 NetProxy 和集成 AP 控制器目录 |
+| `hotspot_ssid`, `hotspot_password`, `hotspot_hidden` | `nwrt`、`1234567890`、`false` | 在设备页管理并同步到 Android 系统的热点配置 |
+| `auto_start_hotspot`, `auto_start_usb_tether` | `true`、`true` | 开机启动系统热点和 USB 共享；DHCP/NAT 仍只由 Android NetworkStack 管理 |
 | `tailscale_proxy`, `tailscale_probe` | | mihomo 出站名和经它访问的 tailnet 地址；两者都设置后才显示 Tailnet 卡片 |
 | `delay_url` | `https://www.gstatic.com/generate_204` | 测速使用的地址 |
 | `wan_prefixes`, `lan_dev` | `sipa_eth`, `rmnet`, `ccmni` / `br0` | 统计流量速率用的网卡 |
@@ -122,7 +126,7 @@ echo '{"tailscale_proxy":"Tailscale","tailscale_probe":"http://100.64.0.1/"}' \
 ```
  browser ──HTTP/HTTPS──▶ glovebox (root, 192.168.88.1:80)
                            ├─ Xiaomi Android/AP 适配器 + AP Turbo（固定地址、热点增强、设备）
-                           ├─ NetProxy netproxyctl（分组、节点、订阅、模式、服务状态）
+                           ├─ 内置 NetProxy/sing-box（分组、节点、订阅、模式、流量）
                            ├─ vendor web API  192.168.0.1:8080  (ZTE signal, SIM, usage, clients, Wi-Fi)
                            ├─ mihomo REST API  127.0.0.1:9091   (旧 ZTE 分组、节点、订阅、连接)
                            ├─ /proc, /sys                       (rates, CPU, memory, battery, thermal)
@@ -143,8 +147,8 @@ echo '{"tailscale_proxy":"Tailscale","tailscale_probe":"http://100.64.0.1/"}' \
 
 ## 编译
 
-需要 Go 1.24+。覆盖包还需要 Android SDK 的 build-tools 和平台 `android.jar`（`overlay/build.sh`
-通过 `ANDROID_HOME` 查找）。
+需要 Go 1.24+。重新构建 Android 桥接程序和可选覆盖包还需要 Android SDK 36 build-tools、
+`android.jar`（通过 `ANDROID_SDK_ROOT`）及 Java 17 `javac`；缺少这些工具时使用仓库内已经构建的产物。
 
 ```sh
 ./build.sh                    # 生成 dist/stage/ 和 dist/glovebox-<版本>.zip

@@ -32,16 +32,45 @@ cp -f $tmp/module.prop $tmp/service.sh $tmp/uninstall.sh $tmp/customize.sh \$MOD
 mkdir -p \$MOD/bin \$MOD/scripts \$MOD/state
 cp -f $tmp/bin/wifi-turbo-helper.jar \$MOD/bin/wifi-turbo-helper.jar
 cp -f $tmp/scripts/wifi_turbo.sh \$MOD/scripts/wifi_turbo.sh
+cp -f $tmp/scripts/netproxy.sh \$MOD/scripts/netproxy.sh
 cp -f $tmp/post-fs-data.sh \$MOD/post-fs-data.sh
 cp -f $tmp/sepolicy.rule \$MOD/sepolicy.rule
-chmod 755 \$MOD/scripts/wifi_turbo.sh \$MOD/post-fs-data.sh
+chmod 755 \$MOD/scripts/wifi_turbo.sh \$MOD/scripts/netproxy.sh \$MOD/post-fs-data.sh
 chmod 644 \$MOD/bin/wifi-turbo-helper.jar \$MOD/sepolicy.rule
+# Install the self-contained proxy runtime. Upgrades replace programs and
+# bundled remote rules while preserving user configuration and catalogs.
+if [ ! -f \$MOD/netproxy/config/module.json ]; then
+  cp -R $tmp/netproxy \$MOD/netproxy
+else
+  mkdir -p \$MOD/netproxy/bin \$MOD/netproxy/config/singbox/rules/remote
+  cp -f $tmp/netproxy/bin/netproxyctl $tmp/netproxy/bin/sing-box $tmp/netproxy/bin/android-platform.dex \$MOD/netproxy/bin/
+  cp -f $tmp/netproxy/LICENSE $tmp/netproxy/NOTICE $tmp/netproxy/SOURCE.md \$MOD/netproxy/
+  cp -R $tmp/netproxy/config/singbox/rules/remote/. \$MOD/netproxy/config/singbox/rules/remote/
+fi
+chmod 755 \$MOD/netproxy/bin/netproxyctl \$MOD/netproxy/bin/sing-box
+chmod 644 \$MOD/netproxy/bin/android-platform.dex
+mkdir -p \$MOD/netproxy/logs \$MOD/netproxy/runtime \$MOD/netproxy/data/catalog/staging
+chmod 700 \$MOD/netproxy/config \$MOD/netproxy/data \$MOD/netproxy/logs \$MOD/netproxy/runtime
 # files under system/ are mounted by Magisk at boot, so changes need a reboot
 if [ -d $tmp/system ]; then
   if ! diff -r $tmp/system \$MOD/system >/dev/null 2>&1; then
     rm -rf \$MOD/system && cp -r $tmp/system \$MOD/system
     echo "note: system/ changed, reboot the device to apply"
   fi
+fi
+# Keep the critical NetworkStack RRO explicit. Some Android toybox/diff builds
+# have treated the nested product overlay tree inconsistently during upgrades.
+if [ -f $tmp/system/product/overlay/GloveboxTetheringOverlay/GloveboxTetheringOverlay.apk ]; then
+  mkdir -p \$MOD/system/product/overlay/GloveboxTetheringOverlay
+  cp -f $tmp/system/product/overlay/GloveboxTetheringOverlay/GloveboxTetheringOverlay.apk \
+    \$MOD/system/product/overlay/GloveboxTetheringOverlay/GloveboxTetheringOverlay.apk
+  chmod 644 \$MOD/system/product/overlay/GloveboxTetheringOverlay/GloveboxTetheringOverlay.apk
+fi
+if [ -f $tmp/system/product/overlay/GloveboxEthernetOverlay/GloveboxEthernetOverlay.apk ]; then
+  mkdir -p \$MOD/system/product/overlay/GloveboxEthernetOverlay
+  cp -f $tmp/system/product/overlay/GloveboxEthernetOverlay/GloveboxEthernetOverlay.apk \
+    \$MOD/system/product/overlay/GloveboxEthernetOverlay/GloveboxEthernetOverlay.apk
+  chmod 644 \$MOD/system/product/overlay/GloveboxEthernetOverlay/GloveboxEthernetOverlay.apk
 fi
 # copy then rename so a running binary is never overwritten in place
 cp -f $tmp/bin/glovebox \$MOD/bin/glovebox.new
@@ -69,6 +98,9 @@ if [ "\$(cat \$MOD/turbo_status 2>/dev/null)" = 1 ]; then
 else
   sh \$MOD/scripts/wifi_turbo.sh off >/dev/null 2>&1 || true
 fi
+# Stop and archive the former standalone module, then start the integrated
+# worker/core from Glovebox's module tree.
+sh \$MOD/scripts/netproxy.sh boot >> \$MOD/state/service.log 2>&1 || true
 if ! grep -q pbkdf2 \$DATA/config.json 2>/dev/null; then
   if [ -f $tmp/initial-password ]; then
     \$MOD/bin/glovebox -config \$DATA/config.json passwd < $tmp/initial-password

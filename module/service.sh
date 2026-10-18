@@ -26,6 +26,20 @@ fi
 
 until [ "$(getprop sys.boot_completed)" = 1 ]; do sleep 2; done
 
+# HyperOS publishes sys.boot_completed before the modular NetworkStack and its
+# RoutingCoordinator binding are ready. Calling TetheringManager in that gap can
+# crash com.android.networkstack.process and leave USB tethering unavailable for
+# the rest of the boot. Give framework/mainline services a deterministic grace
+# period before any WifiManager/TetheringManager helper is launched.
+while :; do
+  read -r uptime_s _ < /proc/uptime
+  uptime_s=${uptime_s%%.*}
+  [ "${uptime_s:-0}" -ge 60 ] && break
+  sleep 2
+done
+until service check wifi 2>/dev/null | grep -q 'found'; do sleep 2; done
+until service check connectivity 2>/dev/null | grep -q 'found'; do sleep 2; done
+
 # Apply the integrated AP controller before the console starts. It is idempotent and
 # preserves the user's Turbo/Stock choice in this module's state directory.
 mkdir -p "$MODDIR/state"
@@ -36,6 +50,10 @@ if [ "$(cat "$MODDIR/turbo_status" 2>/dev/null)" = "1" ]; then
 else
   sh "$MODDIR/scripts/wifi_turbo.sh" off >> "$MODDIR/state/service.log" 2>&1
 fi
+
+# NetProxy is a Glovebox runtime component, not a second Magisk module. Its
+# boot entry starts the subscription worker and, when configured, sing-box.
+sh "$MODDIR/scripts/netproxy.sh" boot >> "$MODDIR/state/service.log" 2>&1 || true
 
 (
   while true; do

@@ -152,6 +152,8 @@ backup_settings_once() {
             "$(settings get global wifi_scan_throttle_enabled 2>/dev/null)"
         printf 'wifi_power_save=%s\n' \
             "$(settings get global wifi_power_save 2>/dev/null)"
+        printf 'tether_force_usb_functions=%s\n' \
+            "$(settings get global tether_force_usb_functions 2>/dev/null)"
     } > "$SETTINGS_BACKUP"
 }
 
@@ -173,6 +175,7 @@ restore_settings() {
         restore_setting global tether_offload_disabled
         restore_setting global wifi_scan_throttle_enabled
         restore_setting global wifi_power_save
+        restore_setting global tether_force_usb_functions
     fi
     cmd wifi force-overlay-config-value bool \
         config_wifiSoftapIeee80211axSupported disabled false >/dev/null 2>&1
@@ -208,15 +211,12 @@ derive_router_bssid() {
 
 run_softap_helper() {
     action="$1"
-    bssid="$2"
+    shift
     [ -f "$HELPER_JAR" ] || return 1
-    if [ "$action" = "enable" ]; then
-        CLASSPATH="$HELPER_JAR" app_process /system/bin \
-            com.wifiapturbo.SoftApConfigurator enable "$SOFTAP_BACKUP" "$bssid"
-    else
-        CLASSPATH="$HELPER_JAR" app_process /system/bin \
-            com.wifiapturbo.SoftApConfigurator "$action" "$SOFTAP_BACKUP"
-    fi
+    # A dead early-boot TetheringManager binding can otherwise block app_process
+    # forever. BusyBox timeout also terminates the helper's process group.
+    CLASSPATH="$HELPER_JAR" "$BUSYBOX" timeout -k 2 30 app_process /system/bin \
+        com.wifiapturbo.SoftApConfigurator "$action" "$SOFTAP_BACKUP" "$@"
 }
 
 hostapd_country_ready() {
@@ -275,10 +275,13 @@ apply_framework_tuning() {
     settings put global tether_offload_disabled 0 >/dev/null 2>&1
     settings put global wifi_scan_throttle_enabled 0 >/dev/null 2>&1
     settings put global wifi_power_save 0 >/dev/null 2>&1
+    # 1 selects CDC-NCM as the physical function for normal USB tethering.
+    # Unlike the separate TETHERING_NCM request, this path provides upstream NAT.
+    settings put global tether_force_usb_functions 1 >/dev/null 2>&1
     cmd wifi force-overlay-config-value bool \
         config_wifiSoftapIeee80211axSupported enabled true >/dev/null 2>&1
     cmd wifi force-overlay-config-value bool \
-        config_wifiSoftapIeee80211beSupported enabled true >/dev/null 2>&1
+        config_wifiSoftapIeee80211beSupported disabled false >/dev/null 2>&1
     cmd wifi force-country-code enabled "$TURBO_COUNTRY_CODE" >/dev/null 2>&1
 
     sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
@@ -299,11 +302,39 @@ runtime_router_ready() {
     return 0
 }
 
+runtime_sample_complete() {
+    [ -n "$(cache_value AP_IFACE)" ] || return 1
+    [ -n "$(cache_value SSID)" ] || return 1
+    [ -n "$(cache_value CONFIG_BSSID)" ] || return 1
+    [ -n "$(cache_value MAX_CLIENTS)" ] || return 1
+    [ -n "$(cache_value AX)" ] || return 1
+    [ -n "$(cache_value VENDOR_EMPTY)" ] || return 1
+    [ -n "$(cache_value BSSID)" ] || return 1
+    [ -n "$(cache_value FREQUENCY)" ] || return 1
+    [ -n "$(cache_value WIFI_STANDARD)" ] || return 1
+}
+
 allow_web_traffic() {
     iptables -w -C INPUT -d "$WEB_IP" -p tcp --dport "$WEB_PORT" -j ACCEPT \
         >/dev/null 2>&1 \
         || iptables -w -I INPUT 1 -d "$WEB_IP" -p tcp --dport "$WEB_PORT" -j ACCEPT \
         >/dev/null 2>&1
+}
+
+ensure_web_policy_rule() {
+    # Android's per-network policy rules otherwise send locally generated
+    # replies from 192.168.88.1 through the cellular default network.
+    ip -4 rule show 2>/dev/null \
+        | grep -Fq "from $WEB_IP lookup main" \
+        || ip -4 rule add pref 9000 from "$WEB_IP/32" lookup main 2>/dev/null
+}
+
+remove_web_policy_rule() {
+    while ip -4 rule show 2>/dev/null \
+            | grep -Fq "from $WEB_IP lookup main"; do
+        ip -4 rule del pref 9000 from "$WEB_IP/32" lookup main 2>/dev/null \
+            || break
+    done
 }
 
 remove_web_rule() {
@@ -334,6 +365,7 @@ setup_web_endpoint() {
     [ -n "$iface" ] || return 1
     ip -4 address show dev "$iface" 2>/dev/null | grep -Fq "$WEB_IP/32" \
         || ip address add "$WEB_IP/32" dev "$iface" 2>/dev/null
+    ensure_web_policy_rule
     allow_web_traffic
     start_webui
 }
@@ -344,6 +376,7 @@ clear_web_endpoint() {
         iface=${netdev##*/}
         ip address del "$WEB_IP/32" dev "$iface" 2>/dev/null
     done
+    remove_web_policy_rule
     remove_web_rule
     stop_webui
 }
@@ -397,6 +430,7 @@ daemon_loop() {
     echo $$ > "$DAEMON_PID_FILE"
     log_msg "lifecycle guard started"
     trap '[ "$(cat "$DAEMON_PID_FILE" 2>/dev/null)" = "$$" ] && rm -f "$DAEMON_PID_FILE"; exit 0' TERM INT EXIT
+    mismatch_count=0
     while true; do
         refresh_runtime_cache
         iface=$(get_ap_iface)
@@ -404,10 +438,17 @@ daemon_loop() {
             setup_web_endpoint
             router_needs_apply=0
             country_needs_apply=0
-            runtime_router_ready || router_needs_apply=1
+            if runtime_sample_complete; then
+                runtime_router_ready || router_needs_apply=1
+            fi
             hostapd_country_ready || country_needs_apply=1
+            if [ "$router_needs_apply" = "1" ]; then
+                mismatch_count=$((mismatch_count + 1))
+            else
+                mismatch_count=0
+            fi
             if [ "$(get_turbo_status)" = "1" ] \
-                    && { [ "$router_needs_apply" = "1" ] \
+                    && { [ "$mismatch_count" -ge 3 ] \
                         || [ "$country_needs_apply" = "1" ]; }; then
                 now=$(date +%s)
                 last=0
@@ -419,6 +460,7 @@ daemon_loop() {
                     apply_framework_tuning
                     if [ "$router_needs_apply" = "1" ]; then
                         run_softap_helper enable "$bssid" >> "$LOG_FILE" 2>&1
+                        mismatch_count=0
                     fi
                     refresh_runtime_cache
                     apply_hostapd_country >> "$LOG_FILE" 2>&1
@@ -429,6 +471,9 @@ daemon_loop() {
         else
             stop_webui
         fi
+        # USB can be unplugged and recreated independently of the hotspot.
+        # Restore only its management alias/route; never restart Wi-Fi here.
+        maintain_usb_web_endpoint >/dev/null 2>&1 || true
         sleep 4
     done
 }
@@ -457,6 +502,99 @@ disable_turbo() {
     setup_web_endpoint
     start_daemon
 	echo "Stock SoftAP configuration restored; Glovebox remains at http://$WEB_IP/"
+}
+
+configure_hotspot() {
+    ssid="$1"
+    password="$2"
+    hidden="$3"
+    bssid=$(derive_router_bssid)
+    apply_framework_tuning
+    run_softap_helper configure "$bssid" "$ssid" "$password" "$hidden"
+    refresh_runtime_cache
+    apply_hostapd_country || true
+    refresh_runtime_cache
+}
+
+set_hotspot() {
+    enabled="$1"
+    ssid="$2"
+    password="$3"
+    hidden="$4"
+    configure_hotspot "$ssid" "$password" "$hidden"
+    if [ "$enabled" = "1" ]; then
+        run_softap_helper start-wifi ""
+        sleep 1
+        refresh_runtime_cache
+        setup_web_endpoint || true
+    else
+        run_softap_helper stop-wifi ""
+        refresh_runtime_cache
+    fi
+}
+
+set_usb_tether() {
+    if [ "$1" = "1" ]; then
+        run_softap_helper start-usb ""
+        setup_usb_web_endpoint
+    else
+        run_softap_helper stop-usb ""
+    fi
+}
+
+get_usb_iface() {
+    dumpsys tethering 2>/dev/null | awk '
+        $2 == "-" && $3 == "TetheredState" && $1 ~ /^(usb|rndis|ncm)/ {
+            print $1; exit
+        }'
+}
+
+setup_usb_web_endpoint() {
+    attempts=0
+    usb_iface=""
+    while [ "$attempts" -lt 20 ]; do
+        usb_iface=$(get_usb_iface)
+        [ -n "$usb_iface" ] && break
+        attempts=$((attempts + 1))
+        sleep 1
+    done
+    [ -n "$usb_iface" ] || return 1
+
+    maintain_usb_web_endpoint || return 1
+    log_msg "USB management route active on $usb_iface"
+}
+
+maintain_usb_web_endpoint() {
+    usb_iface=$(get_usb_iface)
+    [ -n "$usb_iface" ] || return 1
+
+    # Keep Android's native USB subnet, DHCP, gateway and NAT untouched. The
+    # /32 alias is an extra stable management endpoint for fixed-address hosts.
+    ip -4 address show dev "$usb_iface" 2>/dev/null | grep -Fq "$WEB_IP/32" \
+        || ip address add "$WEB_IP/32" dev "$usb_iface" 2>/dev/null \
+        || return 1
+    ip route replace 192.168.88.0/24 dev "$usb_iface" src "$WEB_IP" \
+        2>/dev/null || return 1
+    ensure_web_policy_rule
+    allow_web_traffic
+}
+
+boot_router() {
+    ssid="$1"
+    password="$2"
+    hidden="$3"
+    auto_hotspot="$4"
+    auto_usb="$5"
+    configure_hotspot "$ssid" "$password" "$hidden"
+    [ "$auto_hotspot" = "1" ] && run_softap_helper start-wifi "" || true
+    if [ "$auto_usb" = "1" ]; then
+        # Propagate USB failures to Glovebox so its bounded retry loop can run.
+        # Android remains the only DHCP/NAT owner.
+        run_softap_helper start-usb ""
+        setup_usb_web_endpoint
+    fi
+    refresh_runtime_cache
+    setup_web_endpoint || true
 }
 
 print_status() {
@@ -500,7 +638,10 @@ case "$1" in
     off|disable) disable_turbo ;;
     status) print_status ;;
     webui) setup_web_endpoint && echo "WebUI: http://$WEB_IP/" ;;
+    wifi) set_hotspot "$2" "$3" "$4" "$5" ;;
+    usb) set_usb_tether "$2" ;;
+    boot) boot_router "$2" "$3" "$4" "$5" "$6" ;;
     daemon) daemon_loop ;;
     cleanup) cleanup_all ;;
-	*) echo "Usage: $0 {on|off|status|webui|daemon|cleanup}"; exit 1 ;;
+	*) echo "Usage: $0 {on|off|status|webui|wifi|usb|boot|daemon|cleanup}"; exit 1 ;;
 esac

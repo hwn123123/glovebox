@@ -47,6 +47,7 @@ func TestConfigImport(t *testing.T) {
 	for _, bad := range []string{
 		`{"password_hash": "x"}`,
 		`{"session_secret": "x"}`,
+		`{"hotspot_password": "not-through-import"}`,
 		`{"no_such_field": 1}`,
 		`{"listen": "not a list"}`,
 	} {
@@ -66,8 +67,21 @@ func TestConfigImport(t *testing.T) {
 }
 
 func TestRedacted(t *testing.T) {
-	c := Config{PasswordHash: "h", SessionSecret: "s"}.redacted()
-	if c.PasswordHash == "h" || c.SessionSecret == "s" {
+	c := Config{PasswordHash: "h", SessionSecret: "s", HotspotPassword: "wifi-secret"}.redacted()
+	if c.PasswordHash == "h" || c.SessionSecret == "s" || c.HotspotPassword == "wifi-secret" {
 		t.Fatal("secrets not masked")
+	}
+}
+
+func TestXiaomiRouterDefaults(t *testing.T) {
+	c := defaultConfig()
+	if c.NetProxyDir != "/data/adb/modules/glovebox/netproxy" {
+		t.Fatalf("unexpected embedded NetProxy path %q", c.NetProxyDir)
+	}
+	if c.HotspotSSID != "nwrt" || c.HotspotPassword != "1234567890" {
+		t.Fatalf("unexpected hotspot defaults: %q / %q", c.HotspotSSID, c.HotspotPassword)
+	}
+	if !c.AutoStartHotspot || !c.AutoStartUSBTether {
+		t.Fatal("router sharing must auto-start by default")
 	}
 }

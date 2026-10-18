@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android V and newer treat usb\d+ as a client Ethernet interface by
+     default. On this device usb0 is owned by USB tethering, so letting
+     EthernetTracker start IpClient on it removes the tethering IPv4 address. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.glovebox.ethernet.overlay"
+    android:versionCode="1"
+    android:versionName="1">
+    <uses-sdk android:minSdkVersion="36" android:targetSdkVersion="36" />
+    <overlay
+        android:targetPackage="com.android.connectivity.resources"
+        android:targetName="ServiceConnectivityResourcesConfig"
+        android:isStatic="true"
+        android:priority="901" />
+    <application android:hasCode="false" />
+</manifest>

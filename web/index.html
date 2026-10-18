@@ -141,9 +141,14 @@
               <dt data-i18n="cell.network">Network</dt><dd data-k="cell.network">—</dd>
               <dt>SIM</dt><dd data-k="cell.sim">—</dd>
               <dt>RSRP</dt><dd><span data-k="cell.rsrp">—</span><span class="q" data-k="cell.rsrp.q"><i></i></span></dd>
+              <dt>RSRQ</dt><dd data-k="cell.rsrq">—</dd>
               <dt>SINR</dt><dd><span data-k="cell.sinr">—</span><span class="q" data-k="cell.sinr.q"><i></i></span></dd>
+              <dt data-i18n="cell.arfcn">NR-ARFCN</dt><dd data-k="cell.arfcn">—</dd>
+              <dt data-i18n="cell.simSlot">SIM slot</dt><dd data-k="cell.simSlot">—</dd>
+              <dt>MCC·MNC</dt><dd data-k="cell.mccmnc">—</dd>
               <dt>WAN IP</dt><dd data-k="cell.ip">—</dd>
-              <dt data-i18n="cell.month">This month</dt><dd data-k="cell.month">—</dd>
+              <dt data-i18n="cell.interface">Interface</dt><dd data-k="cell.interface">—</dd>
+              <dt data-k="cell.usageLabel" data-i18n="cell.month">This month</dt><dd data-k="cell.month">—</dd>
             </dl>
             <div class="mini-chart"><span class="dim">RSRP · 10 MIN</span><svg class="spark tall" data-k="cell.spark" viewBox="0 0 240 48" preserveAspectRatio="none"><path class="area"/><path class="line"/></svg></div>
           </div>
@@ -162,7 +167,7 @@
             </dl>
           </div>
         </article>
-        <article class="panel s3 m-half">
+        <article class="panel s3 m-half" data-k="ts.panel">
           <header class="ph"><span class="pi">04</span><h2>TAILNET</h2></header>
           <div class="pb ts">
             <div class="ts-off" data-k="ts.off" hidden><p class="dim" data-i18n="ts.off">Not configured. Set tailscale_proxy and tailscale_probe in config.json to enable.</p></div>
@@ -177,10 +182,10 @@
             </div>
           </div>
         </article>
-        <article class="panel s3 m-half">
+        <article class="panel s3 m-half" data-k="use.panel">
           <header class="ph"><span class="pi">05</span><h2>USAGE</h2><span class="sub" data-i18n="p.usage">data</span></header>
           <div class="pb">
-            <div class="usage"><span class="dim" data-i18n="usage.month">This month · cellular</span><b data-k="use.month">—</b>
+            <div class="usage"><span class="dim" data-k="use.usageLabel" data-i18n="usage.month">This month · cellular</span><b data-k="use.month">—</b>
               <div class="split"><i class="a" data-k="use.rxbar"></i><i class="b"></i></div>
               <div class="kpi-meta"><span>↓ <b data-k="use.rx">—</b></span><span>↑ <b data-k="use.tx">—</b></span></div></div>
             <div class="usage"><span class="dim" data-i18n="usage.lan">Hotspot · live</span>
@@ -224,6 +229,7 @@
         </div>
         <label class="search"><svg class="ic"><use href="#i-search"/></svg><input id="node-filter" type="search" data-i18n-ph="proxy.filter" placeholder="Filter nodes…  /" autocomplete="off"></label>
         <div class="tb-actions">
+          <span class="tag" data-k="proxy.state">—</span>
           <button class="btn" id="btn-conns"><span data-i18n="proxy.conns">Conns</span> <b class="badge" data-k="px.conns">—</b></button>
           <button class="btn pri" id="btn-update"><svg class="ic"><use href="#i-refresh"/></svg><span data-i18n="proxy.updateAll">Update subs</span></button>
         </div>
@@ -231,7 +237,7 @@
       <p class="err panel pad" id="proxy-err" hidden></p>
       <div id="groups" class="groups"></div>
       <article class="panel">
-        <header class="ph"><span class="pi">◇</span><h2>PROVIDERS</h2><span class="sub" data-i18n="p.providers">subscriptions &amp; rule sets</span></header>
+        <header class="ph"><span class="pi">◇</span><h2>PROVIDERS</h2><span class="sub" data-i18n="p.providers">subscriptions &amp; rule sets</span><div class="pa"><button class="btn sm pri" id="btn-sub-add" data-i18n="proxy.addSub">Add subscription</button></div></header>
         <div class="pb flush"><div class="table-wrap" id="providers"></div></div>
       </article>
     </section>
@@ -266,13 +272,16 @@
           </div>
         </article>
 
-        <article class="panel s6 m-full">
-          <header class="ph"><span class="pi">⏻</span><h2>MAINTENANCE</h2><span class="sub" data-i18n="p.maint">maintenance</span></header>
-          <div class="pb actions">
-            <button class="btn" id="btn-box-restart"><svg class="ic"><use href="#i-refresh"/></svg><span data-i18n="act.restartProxy">Restart proxy</span></button>
+        <article class="panel s6 m-full" id="maint-panel">
+          <header class="ph"><span class="pi">⏻</span><h2>MAINTENANCE</h2><span class="sub" data-i18n="p.maint">maintenance</span><div class="pa"><span class="tag" id="maint-proxy-state" hidden></span></div></header>
+          <div class="pb">
+            <p class="maint-status dim" id="maint-proxy-detail" hidden></p>
+            <div class="actions">
+            <button class="btn" id="btn-box-restart"><svg class="ic"><use href="#i-refresh"/></svg><span data-k="maint.restart" data-i18n="act.restartProxy">Restart proxy</span></button>
             <button class="btn" data-sync-time><span data-i18n="act.syncTime">Sync clock from this device</span></button>
             <button class="btn danger" id="btn-reboot"><span data-i18n="act.reboot">Reboot device</span></button>
             <button class="btn ghost" data-logout><svg class="ic"><use href="#i-logout"/></svg><span data-i18n="act.logout">Log out</span></button>
+            </div>
           </div>
         </article>
 
@@ -295,7 +304,7 @@
         <div class="term-bar"><i></i><i></i><i></i><span id="log-title">tail -f clash.log</span></div>
         <div class="log-tools">
           <div class="seg" id="log-src">
-            <button data-src="mihomo">MIHOMO</button><button data-src="box">BOX</button><button data-src="glovebox">GLOVEBOX</button><button data-src="system">SYSTEM</button>
+            <button data-src="mihomo" data-k="log.proxy">MIHOMO</button><button data-src="box" data-k="log.service">BOX</button><button data-src="glovebox">GLOVEBOX</button><button data-src="system">SYSTEM</button>
           </div>
           <div class="seg" id="log-level">
             <button data-level="all">ALL</button><button data-level="info">INFO</button><button data-level="warn">WARN</button><button data-level="error">ERR</button>

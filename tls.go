@@ -299,11 +299,12 @@ func fingerprint(der []byte) string {
 }
 
 type httpsInfo struct {
-	URL        string `json:"url"`
-	Custom     bool   `json:"custom"`
-	CAName     string `json:"ca_name,omitempty"`
-	CASHA256   string `json:"ca_sha256,omitempty"`
-	CANotAfter string `json:"ca_not_after,omitempty"`
+	URL        string   `json:"url"`
+	Hosts      []string `json:"hosts,omitempty"`
+	Custom     bool     `json:"custom"`
+	CAName     string   `json:"ca_name,omitempty"`
+	CASHA256   string   `json:"ca_sha256,omitempty"`
+	CANotAfter string   `json:"ca_not_after,omitempty"`
 }
 
 func (m *certManager) info(c Config) httpsInfo {
@@ -312,9 +313,21 @@ func (m *certManager) info(c Config) httpsInfo {
 	if len(c.Hostnames) > 0 {
 		host = c.Hostnames[0]
 	}
+	// The generated certificate also covers the fixed management IP. Prefer it in
+	// the UI because Android tethering does not provide DNS for glovebox.lan and
+	// some desktop DNS/proxy setups resolve .lan to an unrelated synthetic IP.
+	if m.custom == nil && len(m.ips) > 0 {
+		host = m.ips[0].String()
+	}
+	out.Hosts = append(out.Hosts, c.Hostnames...)
+	for _, ip := range m.ips {
+		out.Hosts = append(out.Hosts, ip.String())
+	}
 	if len(c.TLSListen) > 0 {
 		if _, port, err := net.SplitHostPort(c.TLSListen[0]); err == nil && port != "443" {
 			host = net.JoinHostPort(host, port)
+		} else if strings.Contains(host, ":") {
+			host = "[" + host + "]"
 		}
 	}
 	out.URL = "https://" + host + "/"
