@@ -77,13 +77,80 @@ func readKV(path string) map[string]string {
 }
 
 var (
-	nrRSRPRe    = regexp.MustCompile(`(?i)\b(?:ssRsrp|rsrp)\s*[=:]\s*(-?\d+)`)
-	nrRSRQRe    = regexp.MustCompile(`(?i)\b(?:ssRsrq|rsrq)\s*[=:]\s*(-?\d+)`)
-	nrSINRRe    = regexp.MustCompile(`(?i)\b(?:ssSinr|ssRssnr|sinr)\s*[=:]\s*(-?\d+)`)
-	nrChannelRe = regexp.MustCompile(`(?i)\bmChannelNumber\s*[=:]\s*(\d+)`)
-	usbLinkRe   = regexp.MustCompile(`(?im)\b(?:connected|mConnected)\s*=\s*true\b`)
-	usbFuncRe   = regexp.MustCompile(`(?im)\bmUsbTetheringFunction\s*:\s*([A-Za-z0-9_-]+)`)
+	nrRSRPRe       = regexp.MustCompile(`(?i)\b(?:ssRsrp|rsrp)\s*[=:]\s*(-?\d+)`)
+	nrRSRQRe       = regexp.MustCompile(`(?i)\b(?:ssRsrq|rsrq)\s*[=:]\s*(-?\d+)`)
+	nrSINRRe       = regexp.MustCompile(`(?i)\b(?:ssSinr|ssRssnr|sinr)\s*[=:]\s*(-?\d+)`)
+	nrChannelRe    = regexp.MustCompile(`(?i)\bmChannelNumber\s*[=:]\s*(\d+)`)
+	dataRegStateRe = regexp.MustCompile(`mDataRegState=(\d+)\(([^)]*)\)`)
+	radioTechRe    = regexp.MustCompile(`getRilDataRadioTechnology=\d+\(([^)]*)\)`)
+	operatorRe     = regexp.MustCompile(`mOperatorAlphaLong=([^,}]*)`)
+	channelRe      = regexp.MustCompile(`mChannelNumber=(-?\d+)`)
+	manualSelectRe = regexp.MustCompile(`isManualNetworkSelection=(true|false)`)
+	usbLinkRe      = regexp.MustCompile(`(?im)\b(?:connected|mConnected)\s*=\s*true\b`)
+	usbFuncRe      = regexp.MustCompile(`(?im)\bmUsbTetheringFunction\s*:\s*([A-Za-z0-9_-]+)`)
 )
+
+type xiaomiServiceState struct {
+	DataRegistered bool
+	NetworkType    string
+	Operator       string
+	Channel        string
+	Manual         bool
+}
+
+// parseXiaomiServiceState reads the active subscription's service state instead
+// of trusting gsm.network.type, which can retain the last RAT after a manual
+// PLMN selection has put the modem out of service.
+func parseXiaomiServiceState(raw string) xiaomiServiceState {
+	var fallback xiaomiServiceState
+	for _, line := range strings.Split(raw, "\n") {
+		if !strings.Contains(line, "mServiceState={") {
+			continue
+		}
+		state := xiaomiServiceState{}
+		if m := dataRegStateRe.FindStringSubmatch(line); len(m) > 2 {
+			state.DataRegistered = m[1] == "0" || strings.EqualFold(m[2], "IN_SERVICE")
+		}
+		if m := radioTechRe.FindStringSubmatch(line); len(m) > 1 {
+			state.NetworkType = normalizeXiaomiNetworkType(m[1])
+		}
+		if m := operatorRe.FindStringSubmatch(line); len(m) > 1 {
+			state.Operator = strings.TrimSpace(m[1])
+		}
+		if m := channelRe.FindStringSubmatch(line); len(m) > 1 {
+			if n, err := strconv.Atoi(m[1]); err == nil && n > 0 && n < 4000000 {
+				state.Channel = m[1]
+			}
+		}
+		if m := manualSelectRe.FindStringSubmatch(line); len(m) > 1 {
+			state.Manual = m[1] == "true"
+		}
+		if fallback.NetworkType == "" {
+			fallback = state
+		}
+		if state.DataRegistered {
+			return state
+		}
+	}
+	return fallback
+}
+
+func normalizeXiaomiNetworkType(raw string) string {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "NR_SA", "NR":
+		return "SA"
+	case "NR_NSA", "LTE_NR", "NRNSA":
+		return "NSA"
+	case "LTE", "LTE_CA", "LTE_A":
+		return "LTE"
+	case "UMTS", "HSDPA", "HSUPA", "HSPA", "HSPA+":
+		return "3G"
+	case "GSM", "GPRS", "EDGE":
+		return "2G"
+	default:
+		return strings.TrimSpace(raw)
+	}
+}
 
 func firstValidMatch(re *regexp.Regexp, text string, minValue, maxValue int) string {
 	for _, m := range re.FindAllStringSubmatch(text, -1) {
@@ -441,22 +508,44 @@ func (s *server) xiaomiStatus(ctx context.Context) (map[string]any, error) {
 	c := s.cfg.get()
 	runtime := readKV(filepath.Join(c.TurboDir, "state/runtime.status"))
 	telephony, _ := run(ctx, 4*time.Second, "dumpsys", "telephony.registry")
+	service := parseXiaomiServiceState(telephony)
 	rsrp := firstValidMatch(nrRSRPRe, telephony, -160, -30)
 	rsrq := firstValidMatch(nrRSRQRe, telephony, -50, 20)
 	sinr := firstValidMatch(nrSINRRe, telephony, -30, 80)
-	arfcn := firstValidMatch(nrChannelRe, telephony, 1, 4000000)
-	rawNet := strings.ToUpper(firstActiveProp(getprop("gsm.network.type")))
-	netType := rawNet
-	if strings.Contains(rawNet, "NR") {
-		netType = "SA"
-	} else if strings.Contains(rawNet, "LTE") {
-		netType = "LTE"
+	arfcn := service.Channel
+	if arfcn == "" && service.DataRegistered {
+		arfcn = firstValidMatch(nrChannelRe, telephony, 1, 4000000)
+	}
+	if !service.DataRegistered {
+		// Signal and channel values can remain in CellInfo after the modem has
+		// lost registration. They are useful on the cell-scan page, but must not
+		// be presented as the current WAN signal on the overview.
+		rsrp, rsrq, sinr, arfcn = "", "", "", ""
+	}
+	netType := service.NetworkType
+	if netType == "" {
+		rawNet := strings.ToUpper(firstActiveProp(getprop("gsm.network.type")))
+		netType = normalizeXiaomiNetworkType(rawNet)
+	}
+	if !service.DataRegistered {
+		netType = "NO_SERVICE"
 	}
 	wanIP, wanIface := firstWANIPv4(c.WANPrefixes)
 	modemState, simSlot := xiaomiSIM(getprop("gsm.sim.state"))
 	ppp := "disconnected"
 	if wanIP != "" {
 		ppp = "connected"
+	}
+	operator := ""
+	if service.DataRegistered {
+		operator = service.Operator
+		if operator == "" {
+			operator = firstActiveProp(getprop("gsm.operator.alpha"))
+		}
+	}
+	mccmnc := ""
+	if service.DataRegistered {
+		mccmnc = firstActiveProp(getprop("gsm.operator.numeric"))
 	}
 	wifiOn := "0"
 	if runtime["AP_IFACE"] != "" {
@@ -473,14 +562,16 @@ func (s *server) xiaomiStatus(ctx context.Context) (map[string]any, error) {
 	}
 	return map[string]any{
 		"network_type": netType, "signalbar": signalBars(rsrp),
-		"network_provider_fullname": firstActiveProp(getprop("gsm.operator.alpha")),
+		"network_provider_fullname": operator,
 		"ppp_status":                ppp, "modem_main_state": modemState, "simcard_roam": "Home",
 		"SSID1": runtime["SSID"], "wifi_onoff_state": wifiOn,
 		"Z5g_rsrp": rsrp, "Z5g_RSRQ": rsrq, "Z5g_SINR": sinr,
 		"nr_arfcn": arfcn, "sim_slot": simSlot,
-		"mccmnc": firstActiveProp(getprop("gsm.operator.numeric")), "wan_iface": wanIface,
+		"mccmnc": mccmnc, "wan_iface": wanIface,
 		"monthly_rx_bytes": sessionRX, "monthly_tx_bytes": sessionTX, "usage_scope": "boot",
 		"wan_ipaddr": wanIP, "wa_inner_version": getprop("ro.build.version.incremental"),
+		"radio_registered": service.DataRegistered, "radio_network_type": service.NetworkType,
+		"data_connected": wanIP != "", "selection_mode": map[bool]string{true: "manual", false: "automatic"}[service.Manual],
 		"station_list": stations, "lan_station_list": []any{},
 	}, nil
 }

@@ -37,6 +37,20 @@ func TestXiaomiPropertyAndChannelHelpers(t *testing.T) {
 	}
 }
 
+func TestXiaomiServiceStateSeparatesRATFromRegistration(t *testing.T) {
+	registered := `mServiceState={mDataRegState=0(IN_SERVICE),mChannelNumber=504990,mOperatorAlphaLong=\u4e2d\u56fd\u79fb\u52a8,isManualNetworkSelection=false, getRilDataRadioTechnology=20(NR_SA)}`
+	got := parseXiaomiServiceState(registered)
+	if !got.DataRegistered || got.NetworkType != "SA" || got.Operator != `\u4e2d\u56fd\u79fb\u52a8` || got.Channel != "504990" {
+		t.Fatalf("registered service state = %#v", got)
+	}
+
+	outOfService := `mServiceState={mDataRegState=1(OUT_OF_SERVICE),mChannelNumber=504990,mOperatorAlphaLong=,isManualNetworkSelection=true, getRilDataRadioTechnology=20(NR_SA)}`
+	got = parseXiaomiServiceState(outOfService)
+	if got.DataRegistered || got.NetworkType != "SA" || got.Operator != "" || !got.Manual {
+		t.Fatalf("out-of-service state = %#v", got)
+	}
+}
+
 func TestXiaomiNetSamplerCountsUSBAndWiFiDownstreams(t *testing.T) {
 	n := netSampler{lanDev: "wlan2", xiaomi: true}
 	for _, dev := range []string{"wlan2", "usb0", "rndis0", "ncm0", "ap_br_wlan2"} {

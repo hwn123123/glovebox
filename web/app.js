@@ -474,6 +474,7 @@ let routeSig = '';
 function renderOverview(s) {
   const r = s.rates || {}, h = s.history || {}, c = s.cell || {}, p = s.proxy || {}, ts = s.tailscale || {};
   const b = s.battery || {}, m = s.mem || {}, err = s.errors || {};
+  const radioRegistered = c.radio_registered !== false;
 
   // clock skew
   const skew = s.unix ? Date.now() / 1000 - s.unix : 0;
@@ -490,7 +491,7 @@ function renderOverview(s) {
   [...bars.children].forEach((el, i) => el.classList.toggle('on', i < (c.signalbar || 0)));
   put('kpi.net', [tEnum('net', c.label), c.band].filter(Boolean).join(' · ') || '—');
   put('kpi.sinr', sinr == null ? '—' : sinr + ' dB');
-  const sig = (s.signal_history || []).map((x) => x.rsrp);
+  const sig = radioRegistered ? (s.signal_history || []).map((x) => x.rsrp) : [];
   const sn = sig.filter((x) => x != null);
   spark(K['kpi.sig.spark'], sig.slice(-60), { min: sn.length ? Math.min(...sn) - 3 : -120, max: sn.length ? Math.max(...sn) + 3 : -60, n: 60 });
 
@@ -513,8 +514,8 @@ function renderOverview(s) {
   const deviceErr = err.device || err.zte;
   K['cell.err'].hidden = !deviceErr;
   put('cell.err', deviceErr ? '[ERR] device: ' + deviceErr : '');
-  put('cell.state', c.connected ? t('state.connected') : t('state.disconnected'));
-  K['cell.state'].className = 'tag ' + (c.connected ? 'ok' : 'bad');
+  put('cell.state', c.connected ? t('state.connected') : radioRegistered ? t('cell.dataUnavailable') : t('cells.noService'));
+  K['cell.state'].className = 'tag ' + (c.connected ? 'ok' : radioRegistered ? 'warn' : 'bad');
   put('cell.operator', c.operator || '—');
   put('cell.network', [tEnum('net', c.label), c.band, c.roaming && c.roaming !== 'Home' ? 'ROAMING' : ''].filter(Boolean).join(' · ') || '—');
   put('cell.sim', tEnum('sim', c.sim) || '—');
@@ -623,11 +624,25 @@ function renderCells(d) {
   S.cells = d;
   const cells = d.cells || [], ca = d.aggregation || [];
   const serving = cells.filter((c) => c.registered);
+  const radioRegistered = !!d.radio_registered;
+  const dataConnected = !!d.data_connected;
+  const radioLabel = d.radio_network_type ? tEnum('net', d.radio_network_type) : '—';
   $('#cell-count').textContent = String(cells.length);
   $('#cell-updated').textContent = d.time ? new Date(d.time).toLocaleTimeString() : '—';
   $('#cell-selection-mode').textContent = t(`cells.mode.${d.selection_mode}`);
   $('#cell-serving').textContent = serving.length ? t('cells.servingCount', { n: serving.length }) : t('cells.noServing');
   $('#cell-serving').className = 'tag ' + (serving.length ? 'ok' : 'bad');
+  const live = $('#cell-live');
+  live.className = `tag ${dataConnected ? 'ok' : radioRegistered ? 'warn' : 'bad'}`;
+  live.innerHTML = `<i class="dot ${dataConnected ? 'ok' : radioRegistered ? 'warn' : 'bad'}"></i>${dataConnected ? t('cells.dataConnected') : radioRegistered ? t('cells.radioRegistered') : t('cells.noService')}`;
+  const note = $('#cell-note-text');
+  if (!radioRegistered) {
+    note.textContent = t('cells.noServiceNote', { rat: radioLabel });
+  } else if (!dataConnected) {
+    note.textContent = t('cells.noDataNote', { rat: radioLabel });
+  } else {
+    note.textContent = t('cells.limit');
+  }
   $('#btn-cell-auto').disabled = d.selection_mode === 'automatic';
   $('#btn-cell-scan').disabled = !d.scan_supported;
 

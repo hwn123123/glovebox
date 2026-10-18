@@ -53,6 +53,9 @@ type cellularSnapshot struct {
 	Time               string             `json:"time"`
 	ScanTime           string             `json:"scan_time,omitempty"`
 	SelectionMode      string             `json:"selection_mode"`
+	RadioRegistered    bool               `json:"radio_registered"`
+	RadioNetworkType   string             `json:"radio_network_type"`
+	DataConnected      bool               `json:"data_connected"`
 	ExactLockSupported bool               `json:"exact_lock_supported"`
 	ScanSupported      bool               `json:"scan_supported"`
 	Cells              []cellularCell     `json:"cells"`
@@ -129,7 +132,7 @@ func signalInt(v string, min, max int) int {
 var physicalConfigRE = regexp.MustCompile(`\{([^{}]*mConnectionStatus=[^{}]*)\}`)
 
 func parseCarrierAggregation(raw string, cells []cellularCell) []carrierComponent {
-	var out []carrierComponent
+	out := make([]carrierComponent, 0)
 	line := ""
 	for _, candidate := range strings.Split(raw, "\n") {
 		if strings.Contains(candidate, "mPhysicalChannelConfigs=") {
@@ -153,10 +156,11 @@ func parseCarrierAggregation(raw string, cells []cellularCell) []carrierComponen
 		}
 		// HyperOS currently publishes placeholder PCC/SCC records full of zeroes.
 		// Omitting them is more accurate than presenting a fake second carrier.
-		valid := component.Band != "" && component.Band != "0" ||
+		networkKnown := component.NetworkType != "" && !strings.EqualFold(component.NetworkType, "UNKNOWN")
+		valid := networkKnown && (component.Band != "" && component.Band != "0" ||
 			component.DownlinkChannel != "" && component.DownlinkChannel != "0" ||
 			component.PCI != "" && component.PCI != "0" || component.DownlinkBandwidth > 0 ||
-			component.UplinkBandwidth > 0
+			component.UplinkBandwidth > 0)
 		if valid {
 			out = append(out, component)
 		}
@@ -217,6 +221,11 @@ func (s *server) cellularStatus(ctx context.Context, fresh bool) (cellularSnapsh
 			snap.ScanTime = s.cellScanAt.Format(time.RFC3339)
 		}
 		dump, _ := run(ctx, 4*time.Second, "dumpsys", "telephony.registry")
+		service := parseXiaomiServiceState(dump)
+		snap.RadioRegistered = service.DataRegistered
+		snap.RadioNetworkType = service.NetworkType
+		_, wanIface := firstWANIPv4(s.cfg.get().WANPrefixes)
+		snap.DataConnected = service.DataRegistered && wanIface != ""
 		snap.Aggregation = parseCarrierAggregation(dump, snap.Cells)
 		snap.Time = time.Now().Format(time.RFC3339)
 	}
@@ -275,6 +284,11 @@ func (s *server) handleCellScan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	dump, _ := run(r.Context(), 4*time.Second, "dumpsys", "telephony.registry")
+	service := parseXiaomiServiceState(dump)
+	snap.RadioRegistered = service.DataRegistered
+	snap.RadioNetworkType = service.NetworkType
+	_, wanIface := firstWANIPv4(s.cfg.get().WANPrefixes)
+	snap.DataConnected = service.DataRegistered && wanIface != ""
 	snap.Aggregation = parseCarrierAggregation(dump, snap.Cells)
 	snap.Time = time.Now().Format(time.RFC3339)
 	snap.ScanTime = scanTime.Format(time.RFC3339)
