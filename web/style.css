@@ -338,6 +338,22 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 td .sub { display: block; color: var(--fg-2); font-size: .76rem; }
 .empty { padding: 18px 14px; color: var(--fg-2); }
 
+/* ---------- cellular ---------- */
+.cell-tools { position: sticky; top: calc(var(--top-h) + var(--sa-t)); z-index: 4; backdrop-filter: blur(12px); }
+.cell-tool-stat { color: var(--fg-2); font-size: .78rem; white-space: nowrap; }
+.cell-tool-stat b { color: var(--fg); margin-left: 5px; }
+.cell-tools .tb-actions { margin-left: auto; }
+.cell-note { margin-bottom: var(--gap); }
+.cell-note > span:last-child { line-height: 1.45; }
+.cell-role { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.cell-role .dot { width: 6px; height: 6px; }
+.cell-signal { min-width: 94px; }
+.cell-signal b { display: block; color: var(--fg); }
+.cell-signal small { color: var(--fg-2); }
+.cell-id { max-width: 180px; overflow-wrap: anywhere; }
+.cell-table tr.serving td { background: rgba(var(--ok-rgb), .035); }
+.cell-table tr.serving td:first-child { box-shadow: inset 2px 0 var(--ok); }
+
 /* ---------- proxy ---------- */
 .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; margin-bottom: var(--gap); }
 .search { position: relative; display: flex; align-items: center; flex: 1; min-width: 180px; }
@@ -477,7 +493,7 @@ body.stale main { filter: saturate(.3) brightness(.8); transition: filter .4s; }
   .clock { display: none; }
   main { padding: 12px calc(10px + var(--sa-r)) calc(var(--tab-h) + var(--sa-b) + 16px) calc(10px + var(--sa-l)); }
   .tabbar {
-    display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
     height: calc(var(--tab-h) + var(--sa-b)); padding: 0 var(--sa-r) var(--sa-b) var(--sa-l);
     background: rgba(5, 7, 10, .94); border-top: 1px solid var(--line-2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
   }

@@ -408,10 +408,10 @@ function gauge(k, pct, text, color) {
 
 /* ---------- state ---------- */
 
-const S = { status: null, info: null, proxies: null };
+const S = { status: null, info: null, proxies: null, cells: null };
 let page = 'overview';
 let loggedIn = false;
-const PAGES = ['overview', 'proxy', 'device', 'logs'];
+const PAGES = ['overview', 'cellular', 'proxy', 'device', 'logs'];
 const proxyCoreName = (s = S.status) => s?.platform === 'xiaomi' ? 'NETPROXY' : 'MIHOMO';
 
 function renderChips(s) {
@@ -613,6 +613,91 @@ function renderClients(list, tableKey, countKey) {
       list.map((c) => `<tr><td>${esc(c.name || '—')}<span class="sub">${esc(c.mac)}</span></td><td>${esc(c.ip)}</td><td class="num"><span class="tag">${esc(c.via)}</span></td></tr>`).join('')}</tbody></table>`
     : `<p class="empty">${t('clients.none')}</p>`;
 }
+
+/* ---------- cellular ---------- */
+
+const cellValue = (v, suffix = '') => (v == null || v === '' || Number(v) === 0 ? '—' : `${v}${suffix}`);
+const cellPLMN = (c) => `${c.mcc || ''}${c.mnc || ''}`;
+
+function renderCells(d) {
+  S.cells = d;
+  const cells = d.cells || [], ca = d.aggregation || [];
+  const serving = cells.filter((c) => c.registered);
+  $('#cell-count').textContent = String(cells.length);
+  $('#cell-updated').textContent = d.time ? new Date(d.time).toLocaleTimeString() : '—';
+  $('#cell-selection-mode').textContent = t(`cells.mode.${d.selection_mode}`);
+  $('#cell-serving').textContent = serving.length ? t('cells.servingCount', { n: serving.length }) : t('cells.noServing');
+  $('#cell-serving').className = 'tag ' + (serving.length ? 'ok' : 'bad');
+  $('#btn-cell-auto').disabled = d.selection_mode === 'automatic';
+  $('#btn-cell-scan').disabled = !d.scan_supported;
+
+  $('#cell-table').innerHTML = cells.length ? `<table class="cell-table"><thead><tr>
+    <th>${t('cells.role')}</th><th>RAT</th><th>${t('cell.operator')} / PLMN</th><th>NCI / CI</th><th>TAC / LAC</th>
+    <th>PCI</th><th>ARFCN</th><th>${t('cells.band')}</th><th>${t('cells.signal')}</th><th class="num">${t('cells.action')}</th>
+  </tr></thead><tbody>${cells.map((c) => {
+    const plmn = cellPLMN(c);
+    const signal = c.rsrp || c.dbm;
+    return `<tr class="${c.registered ? 'serving' : ''}">
+      <td><span class="cell-role"><i class="dot ${c.registered ? 'ok' : ''}"></i>${t(c.registered ? 'cells.serving' : c.source === 'scan' ? 'cells.scanned' : 'cells.neighbour')}</span>${c.source === 'scan' && c.last_seen ? `<span class="sub">${relTime(c.last_seen)}</span>` : ''}</td>
+      <td><span class="tag ${c.registered ? 'acc' : ''}">${esc(c.type || '—')}</span></td>
+      <td>${esc(c.operator || '—')}<span class="sub">${esc(plmn || '—')}</span></td>
+      <td class="cell-id">${esc(c.cell_id || '—')}</td><td>${esc(c.tac || '—')}</td><td>${esc(c.pci || '—')}</td>
+      <td>${esc(c.arfcn || '—')}</td><td>${esc(c.bands || '—')}</td>
+      <td><span class="cell-signal"><b>${cellValue(signal, ' dBm')}</b><small>RSRQ ${cellValue(c.rsrq, ' dB')} · SINR ${cellValue(c.sinr, ' dB')}</small></span></td>
+      <td class="num">${plmn ? `<button class="btn sm" data-cell-plmn="${esc(plmn)}" data-cell-name="${esc(c.operator || plmn)}"${d.selection_mode === 'manual' && c.registered ? ' disabled' : ''}>${t('cells.selectNetwork')}</button>` : '—'}</td>
+    </tr>`;
+  }).join('')}</tbody></table>` : `<p class="empty">${t('cells.empty')}</p>`;
+
+  $('#ca-state').textContent = ca.length > 1 ? `${ca.length} CC` : ca.length === 1
+    ? (ca[0].source === 'registered_cell' ? t('cells.oneServing') : '1 CC') : '—';
+  $('#ca-state').className = 'tag ' + (ca.length > 1 ? 'ok' : '');
+  $('#ca-table').innerHTML = ca.length ? `<table><thead><tr><th>${t('cells.component')}</th><th>RAT</th><th>${t('cells.band')}</th><th>DL ARFCN</th><th>UL ARFCN</th><th>PCI</th><th class="num">DL BW</th><th class="num">UL BW</th><th>${t('cells.source')}</th></tr></thead><tbody>${ca.map((c, i) => `<tr>
+    <td>${esc(c.role || (i ? 'SecondaryServing' : 'PrimaryServing'))}</td><td>${esc(c.network_type || '—')}</td><td>${esc(c.band || '—')}</td>
+    <td>${esc(c.downlink_channel || '—')}</td><td>${esc(c.uplink_channel || '—')}</td><td>${esc(c.pci || '—')}</td>
+    <td class="num">${c.downlink_bandwidth_khz ? (c.downlink_bandwidth_khz / 1000) + ' MHz' : '—'}</td>
+    <td class="num">${c.uplink_bandwidth_khz ? (c.uplink_bandwidth_khz / 1000) + ' MHz' : '—'}</td><td>${t(`cells.source.${c.source}`)}</td>
+  </tr>`).join('')}</tbody></table>` : `<p class="empty">${t('cells.noAggregation')}</p>`;
+}
+
+async function loadCells(fresh = false) {
+  try {
+    const d = await api('/api/cells' + (fresh ? '?fresh=1' : ''));
+    $('#cell-err').hidden = true;
+    renderCells(d);
+  } catch (e) {
+    $('#cell-err').hidden = false;
+    $('#cell-err').textContent = '[ERR] ' + e.message;
+    throw e;
+  }
+}
+
+$('#btn-cell-refresh').addEventListener('click', (ev) => busy(ev.currentTarget, t('cells.refreshing'), () => loadCells(true)));
+$('#btn-cell-auto').addEventListener('click', async (ev) => {
+  if (!(await confirmBox(t('cells.confirmAutomatic')))) return;
+  await busy(ev.currentTarget, null, async () => {
+    await api('/api/cells/selection', { mode: 'automatic' });
+    toast(t('cells.automaticSet'));
+    setTimeout(() => page === 'cellular' && loadCells(true), 1800);
+  });
+});
+$('#btn-cell-scan').addEventListener('click', async (ev) => {
+  if (!(await confirmBox(t('cells.confirmScan')))) return;
+  await busy(ev.currentTarget, t('cells.scanning'), async () => {
+    const d = await api('/api/cells/scan', {}, { timeout: 60000 });
+    renderCells(d);
+    toast(t('cells.scanComplete', { n: (d.cells || []).length }));
+  });
+});
+$('#cell-table').addEventListener('click', async (ev) => {
+  const b = ev.target.closest('[data-cell-plmn]');
+  if (!b) return;
+  if (!(await confirmBox(t('cells.confirmManual', { name: esc(b.dataset.cellName), plmn: esc(b.dataset.cellPlmn) })))) return;
+  await busy(b, null, async () => {
+    await api('/api/cells/selection', { mode: 'manual', plmn: b.dataset.cellPlmn });
+    toast(t('cells.manualSet', { plmn: b.dataset.cellPlmn }));
+    setTimeout(() => page === 'cellular' && loadCells(true), 2500);
+  });
+});
 
 /* ---------- proxy ---------- */
 
@@ -1232,7 +1317,7 @@ $('#log').addEventListener('scroll', () => {
 /* ---------- routing and polling ---------- */
 
 let statusTimer = null, pageTimer = null;
-const PAGE_EVERY = { overview: 0, proxy: 10000, device: 10000, logs: 2500 };
+const PAGE_EVERY = { overview: 0, cellular: 3000, proxy: 10000, device: 10000, logs: 2500 };
 const visible = () => document.visibilityState === 'visible';
 
 async function statusTick() {
@@ -1253,7 +1338,7 @@ async function statusTick() {
   if (loggedIn) statusTimer = setTimeout(statusTick, 2000);
 }
 
-const loaders = { overview: async () => { if (S.status) renderOverview(S.status); }, proxy: loadProxies, device: loadDevice, logs: loadLogs };
+const loaders = { overview: async () => { if (S.status) renderOverview(S.status); }, cellular: loadCells, proxy: loadProxies, device: loadDevice, logs: loadLogs };
 
 async function pageTick(first) {
   clearTimeout(pageTimer);
@@ -1291,7 +1376,7 @@ document.addEventListener('visibilitychange', () => {
 });
 addEventListener('online', () => { if (loggedIn) statusTick(); });
 
-// keyboard: 1-4 switch pages, / focuses the filter
+// keyboard: 1-5 switch pages, / focuses the filter
 document.addEventListener('keydown', (ev) => {
   if (!loggedIn || ev.metaKey || ev.ctrlKey || ev.altKey || modal.open) return;
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
@@ -1299,7 +1384,7 @@ document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') document.activeElement.blur();
     return;
   }
-  if (/^[1-4]$/.test(ev.key)) { location.hash = '#' + PAGES[Number(ev.key) - 1]; ev.preventDefault(); }
+  if (/^[1-5]$/.test(ev.key)) { location.hash = '#' + PAGES[Number(ev.key) - 1]; ev.preventDefault(); }
   if (ev.key === '/') {
     const f = page === 'proxy' ? $('#node-filter') : page === 'logs' ? $('#log-filter') : null;
     if (f) { f.focus(); ev.preventDefault(); }
@@ -1312,6 +1397,7 @@ function renderAll() {
   $$('[data-sig]').forEach((el) => { delete el.dataset.sig; });
   if (S.status) { renderChips(S.status); renderStatusLine(S.status); renderPlatformLabels(); renderOverview(S.status); renderClients(S.status.client_list, 'clients.table2', 'clients.count2'); }
   if (S.proxies) renderProxies(true);
+  if (S.cells) renderCells(S.cells);
   if (logText || logMissing) renderLog();
   if (wifiLoaded) { wifiLoaded = false; if (page === 'device') loadDevice(true); }
   renderSecure();

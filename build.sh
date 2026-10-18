@@ -27,7 +27,7 @@ cp -R module/. "$stage/"
 # Java sources and helper build output are development inputs, not Magisk
 # runtime files. Keep them in the repository but never ship them to the phone.
 rm -rf "$stage/.helper-build"
-rm -f "$stage/SoftApConfigurator.java" "$stage/build_helper.sh"
+rm -f "$stage/SoftApConfigurator.java" "$stage/CellularConfigurator.java" "$stage/build_helper.sh" "$stage/android.jar"
 
 # Runtime resource overlay that raises the SoftAP client limit. Magisk mounts the module's
 # system/vendor onto /vendor, so it lands in /vendor/overlay.

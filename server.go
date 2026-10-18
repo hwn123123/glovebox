@@ -39,6 +39,13 @@ type server struct {
 	capMu  sync.Mutex
 	capMax int
 	capAt  time.Time
+
+	cellMu     sync.Mutex
+	cellCache  cellularSnapshot
+	cellAt     time.Time
+	cellErr    error
+	cellScan   []cellularCell
+	cellScanAt time.Time
 }
 
 func newServer(cs *configStore, logDir string) *server {
@@ -157,6 +164,9 @@ func (s *server) routes() http.Handler {
 	}
 	authed("GET /api/info", s.handleInfo)
 	authed("GET /api/status", s.handleStatus)
+	authed("GET /api/cells", s.handleCells)
+	authed("POST /api/cells/scan", s.handleCellScan)
+	authed("POST /api/cells/selection", s.handleCellSelection)
 	authed("GET /api/proxies", s.handleProxies)
 	authed("POST /api/proxies/select", s.handleSelect)
 	authed("POST /api/proxies/delay", s.handleDelay)
