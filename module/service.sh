@@ -4,6 +4,17 @@ MODDIR=${0%/*}
 DATA=/data/adb/glovebox
 PIDFILE=$DATA/supervisor.pid
 
+# The previous wifi_ap_turbo module owned the same fixed address and port. Keep its
+# tuning state, stop only its controller/httpd, and disable it before Glovebox binds :80.
+OLD=/data/adb/modules/wifi_ap_turbo
+if [ -d "$OLD" ]; then
+  [ -f "$OLD/state/daemon.pid" ] && kill "$(cat "$OLD/state/daemon.pid")" 2>/dev/null || true
+  [ -f "$OLD/state/web.pid" ] && kill "$(cat "$OLD/state/web.pid")" 2>/dev/null || true
+  rm -f "$OLD/state/daemon.pid" "$OLD/state/web.pid"
+  touch "$OLD/disable"
+  pkill -f 'httpd -p 192.168.88.1:80' 2>/dev/null || true
+fi
+
 mkdir -p "$DATA"
 chmod 700 "$DATA"
 
@@ -14,6 +25,17 @@ if [ -n "$pid" ] && grep -q glovebox/service.sh "/proc/$pid/cmdline" 2>/dev/null
 fi
 
 until [ "$(getprop sys.boot_completed)" = 1 ]; do sleep 2; done
+
+# Apply the integrated AP controller before the console starts. It is idempotent and
+# preserves the user's Turbo/Stock choice in this module's state directory.
+mkdir -p "$MODDIR/state"
+rm -f "$MODDIR/state/daemon.pid" "$MODDIR/state/web.pid"
+[ -f "$MODDIR/turbo_status" ] || echo 1 > "$MODDIR/turbo_status"
+if [ "$(cat "$MODDIR/turbo_status" 2>/dev/null)" = "1" ]; then
+  sh "$MODDIR/scripts/wifi_turbo.sh" on >> "$MODDIR/state/service.log" 2>&1
+else
+  sh "$MODDIR/scripts/wifi_turbo.sh" off >> "$MODDIR/state/service.log" 2>&1
+fi
 
 (
   while true; do

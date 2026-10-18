@@ -16,6 +16,8 @@ import (
 // Config is stored in /data/adb/glovebox/config.json, outside the module directory so it survives
 // module upgrades. Only fields that differ from the defaults are written, see save.
 type Config struct {
+	// device backend: auto detects Xiaomi shennong, otherwise keeps the upstream ZTE backend
+	Platform string `json:"platform"`
 	// HTTP listen addresses; 192.168.0.254 is an alias on br0 (the vendor DHCP pool ends at .253)
 	Listen []string `json:"listen"`
 	// HTTPS listen addresses (PWA and service workers need a secure context); empty disables HTTPS
@@ -40,10 +42,16 @@ type Config struct {
 
 	MihomoAPI    string `json:"mihomo_api"`
 	MihomoSecret string `json:"mihomo_secret"`
+	// accept the local proxy core's self-signed HTTPS certificate
+	MihomoInsecure bool `json:"mihomo_insecure"`
 	// main proxy group shown on the overview; empty picks the first visible Selector
 	MainGroup string `json:"main_group"`
 
 	BoxDir string `json:"box_dir"`
+	// Xiaomi integration paths. They are fixed to known module layouts; no shell command is
+	// accepted from the web/API configuration.
+	NetProxyDir string `json:"netproxy_dir"`
+	TurboDir    string `json:"turbo_dir"`
 	// periodically fetch TailscaleProbe through the mihomo outbound TailscaleProxy to check the tailnet;
 	// enabled only when both are set
 	TailscaleProxy string `json:"tailscale_proxy"`
@@ -57,20 +65,24 @@ type Config struct {
 
 func defaultConfig() Config {
 	return Config{
-		Listen:     []string{"192.168.0.254:80"},
-		TLSListen:  []string{"192.168.0.254:443"},
+		Platform:   "auto",
+		Listen:     []string{"192.168.88.1:80"},
+		TLSListen:  []string{"192.168.88.1:443"},
 		Hostnames:  []string{"glovebox.lan"},
-		AliasAddr:  "192.168.0.254/32",
-		AliasDev:   "br0",
-		AllowCIDRs: []string{"192.168.0.0/24", "127.0.0.0/8"},
+		AliasAddr:  "192.168.88.1/32",
+		AliasDev:   "wlan2",
+		AllowCIDRs: []string{"127.0.0.0/8", "::1/128"},
 		// not 127.0.0.1: the vendor iptables rules only allow 192.168.0.0/24 to reach port 8080
-		ZTEBase:     "http://192.168.0.1:8080",
-		ZTEDB:       "/data/data/com.zte.web/databases/web_settings.db",
-		MihomoAPI:   "http://127.0.0.1:9091",
-		BoxDir:      "/data/adb/box",
-		DelayURL:    "https://www.gstatic.com/generate_204",
-		WANPrefixes: []string{"sipa_eth", "rmnet", "ccmni"},
-		LANDev:      "br0",
+		ZTEBase:        "http://192.168.0.1:8080",
+		ZTEDB:          "/data/data/com.zte.web/databases/web_settings.db",
+		MihomoAPI:      "https://127.0.0.1:9091",
+		MihomoInsecure: true,
+		BoxDir:         "/data/adb/box",
+		NetProxyDir:    "/data/adb/modules/netproxy",
+		TurboDir:       "/data/adb/modules/glovebox",
+		DelayURL:       "https://www.gstatic.com/generate_204",
+		WANPrefixes:    []string{"sipa_eth", "rmnet", "ccmni"},
+		LANDev:         "wlan2",
 	}
 }
 
@@ -169,6 +181,9 @@ func (c Config) redacted() Config {
 	}
 	if c.SessionSecret != "" {
 		c.SessionSecret = "(set)"
+	}
+	if c.MihomoSecret != "" {
+		c.MihomoSecret = "(set)"
 	}
 	return c
 }

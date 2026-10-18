@@ -28,8 +28,14 @@ func (s *server) zteStatus(ctx context.Context) (map[string]any, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	m, err := s.zte.get(ctx, zteStatusFields...)
-	if err == nil {
+	var m map[string]any
+	var err error
+	if s.platform == "xiaomi" {
+		m, err = s.xiaomiStatus(ctx)
+	} else {
+		m, err = s.zte.get(ctx, zteStatusFields...)
+	}
+	if err == nil && s.platform != "xiaomi" {
 		for _, k := range []string{"station_list", "lan_station_list"} {
 			if l, err2 := s.zte.get(ctx, k); err2 == nil {
 				m[k] = l[k]
@@ -171,7 +177,7 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	z, err := s.zteStatus(ctx)
 	if err != nil {
-		errs["zte"] = err.Error()
+		errs["device"] = err.Error()
 	} else {
 		band := str(z["nr5g_action_band"])
 		if band == "" {
@@ -224,7 +230,23 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	proxy := map[string]any{"running": false}
 	mctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	if v, err := s.mihomo.version(mctx); err != nil {
+	if s.platform == "xiaomi" {
+		if st, err := s.netproxyStatus(mctx); err != nil {
+			errs["mihomo"] = err.Error()
+		} else {
+			proxy["running"] = st.State == "ready" || st.State == "started"
+			proxy["version"] = "NetProxy / " + st.ConfiguredBackend
+			proxy["mode"] = formatNetproxyMode(st.OutboundMode)
+			proxy["group"] = st.ActiveGroupName
+			if st.SelectedNodeRef != "" {
+				proxy["now"] = []string{selectedTag(st.SelectedNodeRef)}
+			}
+			proxy["connections"] = st.ConnectionsIn + st.ConnectionsOut
+			proxy["upload_total"] = st.UploadTotal
+			proxy["download_total"] = st.DownloadTotal
+			proxy["memory"] = st.MemoryBytes
+		}
+	} else if v, err := s.mihomo.version(mctx); err != nil {
 		errs["mihomo"] = err.Error()
 	} else {
 		proxy["running"] = true
@@ -246,12 +268,22 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out["proxy"] = proxy
+	if s.platform == "xiaomi" {
+		out["turbo"] = s.turboStatus()
+		out["platform"] = "xiaomi"
+	} else {
+		out["platform"] = "zte"
+	}
 	out["tailscale"] = s.ts.status()
 	out["errors"] = errs
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *server) handleClients(w http.ResponseWriter, r *http.Request) {
+	if s.platform == "xiaomi" {
+		writeJSON(w, http.StatusOK, map[string]any{"clients": s.xiaomiClients(r.Context())})
+		return
+	}
 	z, err := s.zteStatus(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)

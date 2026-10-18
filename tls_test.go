@@ -20,7 +20,7 @@ func TestCertManagerNameConstraints(t *testing.T) {
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(m.ca)
-	for _, name := range []string{"glovebox.lan", "192.168.0.254"} {
+	for _, name := range []string{"glovebox.lan", "192.168.88.1"} {
 		if _, err := leaf.Leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: name}); err != nil {
 			t.Errorf("leaf not valid for %s: %v", name, err)
 		}

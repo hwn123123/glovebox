@@ -22,6 +22,8 @@ type server struct {
 	ts     *tsProbe
 	certs  *certManager // nil when HTTPS is off
 	logDir string
+	// platform is resolved once at startup ("zte" or "xiaomi").
+	platform string
 	// demo mode: in-process fake ZTE / mihomo backends, synthetic system info,
 	// destructive actions are only logged
 	demo bool
@@ -42,16 +44,18 @@ type server struct {
 
 func newServer(cs *configStore, logDir string) *server {
 	c := cs.get()
-	mc := newMihomo(c.MihomoAPI, c.MihomoSecret)
+	proxyURL, proxySecret, proxyCert, proxyKey := proxyController(c)
+	mc := newMihomo(proxyURL, proxySecret, c.MihomoInsecure, proxyCert, proxyKey)
 	return &server{
-		cfg:    cs,
-		auth:   &auth{cfg: cs},
-		zte:    newZTE(c.ZTEBase, c.ZTEDB),
-		mihomo: mc,
-		net:    &netSampler{wanPrefixes: c.WANPrefixes, lanDev: c.LANDev},
-		ts:     &tsProbe{m: mc, cfg: cs},
-		logDir: logDir,
-		sys:    readSysInfo,
+		cfg:      cs,
+		auth:     &auth{cfg: cs},
+		zte:      newZTE(c.ZTEBase, c.ZTEDB),
+		mihomo:   mc,
+		net:      &netSampler{wanPrefixes: c.WANPrefixes, lanDev: c.LANDev},
+		ts:       &tsProbe{m: mc, cfg: cs},
+		logDir:   logDir,
+		platform: detectPlatform(c.Platform),
+		sys:      readSysInfo,
 	}
 }
 
@@ -153,6 +157,7 @@ func (s *server) routes() http.Handler {
 	authed("GET /api/clients", s.handleClients)
 	authed("GET /api/wifi", s.handleWiFi)
 	authed("POST /api/wifi", s.handleSetWiFi)
+	authed("POST /api/wifi/turbo", s.handleSetTurbo)
 	authed("POST /api/box/restart", s.handleBoxRestart)
 	authed("POST /api/device/reboot", s.handleReboot)
 	authed("POST /api/device/time", s.handleSetTime)
@@ -170,7 +175,8 @@ const csp = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-
 // X-Glovebox header, which cross-site pages cannot set without a CORS preflight (CSRF protection).
 func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowedRemote(r.RemoteAddr, s.cfg.get().AllowCIDRs) {
+		c := s.cfg.get()
+		if !allowedRemote(r.RemoteAddr, c.AllowCIDRs) && !allowedOnInterface(r.RemoteAddr, c.LANDev) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -184,6 +190,33 @@ func (s *server) guard(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// allowedOnInterface admits only peers in one of the LAN interface's directly connected
+// prefixes. Android chooses the tether subnet dynamically, so a static CIDR is not reliable.
+func allowedOnInterface(remote, dev string) bool {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil || dev == "" {
+		return false
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	ifc, err := net.InterfaceByName(dev)
+	if err != nil {
+		return false
+	}
+	addrs, err := ifc.Addrs()
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		if p, err := netip.ParsePrefix(addr.String()); err == nil && p.Contains(ip.Unmap()) {
+			return true
+		}
+	}
+	return false
 }
 
 func allowedRemote(remote string, cidrs []string) bool {

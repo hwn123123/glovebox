@@ -1,0 +1,3 @@
+# Allow hostapd to return control-interface replies to the Magisk daemon that
+# reapplies the SoftAP country code and beacon after HyperOS restarts the AP.
+allow hal_wifi_hostapd_default magisk unix_dgram_socket sendto

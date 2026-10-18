@@ -3,4 +3,4 @@ name=Glovebox
 version=dev
 versionCode=1
 author=Glovebox contributors
-description=LuCI-style web console for rooted Android mobile routers: Wi-Fi, mihomo proxy, device status and logs at http://glovebox.lan (hotspot clients only). Includes an overlay that raises the hotspot client limit.
+description=Unified Xiaomi 14 Pro hotspot and proxy console at http://192.168.88.1:80; integrates AP Turbo fixed address, Wi-Fi tuning, sing-box NetProxy status and device logs.

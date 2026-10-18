@@ -89,7 +89,10 @@ func readThermals() []thermal {
 			continue
 		}
 		c := float64(t)
-		if c > 1000 {
+		// Most Android thermal zones report millidegrees; a few PMIC zones use a
+		// small integer scale. Values above a plausible human temperature are
+		// therefore normalized as millidegrees too.
+		if c > 120 {
 			c /= 1000
 		}
 		out = append(out, thermal{Name: readTrim(z + "/type"), TempC: c})

@@ -4,7 +4,7 @@
 
 **A LuCI-style web console for rooted Android mobile routers.** Glovebox runs as root on the
 stock firmware of a pocket 5G/4G Wi-Fi router and gives you one place to watch the cellular link,
-manage the hotspot, drive a [mihomo](https://github.com/MetaCubeX/mihomo) proxy and read logs —
+manage the hotspot, drive a [mihomo](https://github.com/MetaCubeX/mihomo) or NetProxy sing-box proxy and read logs —
 without flashing OpenWrt.
 
 English · [简体中文](README.zh-CN.md)
@@ -12,8 +12,8 @@ English · [简体中文](README.zh-CN.md)
 ![Overview](docs/screenshots/en/overview.png)
 
 - **Single static binary**, web UI embedded, no runtime dependencies. Packaged as a Magisk module.
-- **Works with the stock firmware**: talks to the vendor web API (ZTE goform), mihomo's REST API
-  and `/proc`, `/sys` — the vendor UI and apps keep working.
+- **Works with the stock firmware**: supports the ZTE goform stack and Xiaomi 14 Pro / HyperOS
+  through Android hotspot APIs, NetProxy's root CLI and `/proc`, `/sys` — the vendor UI and apps keep working.
 - **Installable app (PWA)** with a responsive layout for desktop, tablets, phones (portrait and
   landscape) and in-vehicle / embedded browsers. HTTPS via a generated, name-constrained local CA.
 - **Internationalized** (English, 简体中文); adding a language is adding one JSON file.
@@ -24,8 +24,8 @@ English · [简体中文](README.zh-CN.md)
 | Page | What you get |
 | --- | --- |
 | Overview | Live WAN throughput chart, signal (RSRP/SINR/band) with history, egress node and proxy chain, Tailscale reachability probe, monthly data usage, battery/CPU/memory/temperature gauges, connected clients |
-| Proxy | mihomo groups and nodes, switch nodes, latency tests, rule/global/direct mode, update subscriptions and rule sets, live connections with filter and "close all" |
-| Device | Hotspot SSID/password/visibility/on-off per band, max clients (up to the system limit), connected devices, HTTPS & app install guide, restart proxy, reboot, sync the device clock, console password, theme/language |
+| Proxy | mihomo or NetProxy groups and nodes, switch nodes, latency tests, rule/global/direct mode, update subscriptions, proxy health and traffic totals |
+| Device | Xiaomi AP Turbo status, fixed `192.168.88.1` management address, Wi-Fi 6/32-client tuning, connected devices, HTTPS & app install guide, restart proxy, reboot, sync the device clock, console password, theme/language |
 | Logs | mihomo, Box for Root, Glovebox and Android logcat — level filter, grep with highlight, follow/pause, wrap |
 
 Keyboard: `1`–`4` switch pages, `/` focuses the filter.
@@ -41,16 +41,18 @@ Keyboard: `1`–`4` switch pages, `/` focuses the filter.
 
 ## Supported devices
 
-Glovebox currently targets the **ZTE F50** (Unisoc platform, Android 13, firmware B09) and the
-vendor stack it ships with. Anything that talks to the hardware is behind small clients
-(`zte.go`, `mihomo.go`, `sys.go`), so other Android-based routers can be added — contributions are
-welcome.
+Glovebox supports the **ZTE F50** (Unisoc platform, Android 13, firmware B09) and the tested
+**Xiaomi 14 Pro / shennong** HyperOS Android 16 integration. Hardware access is kept behind small
+adapters (`zte.go`, `xiaomi.go`, `netproxy.go`, `mihomo.go`, `sys.go`), so other Android routers can
+be added — contributions are welcome.
 
 Requirements on the device:
 
 - Root with [Magisk](https://github.com/topjohnwu/Magisk)
-- Optional: [Box for Root](https://github.com/taamarin/box_for_magisk) running mihomo with the
-  external controller on `127.0.0.1:9091` (the proxy page and charts degrade gracefully without it)
+- Optional on ZTE: [Box for Root](https://github.com/taamarin/box_for_magisk) running mihomo with the
+  external controller on `127.0.0.1:9091`
+- Xiaomi 14 Pro: the installed NetProxy module is read through its root `netproxyctl` CLI; the
+  NetProxy subscription and sing-box configuration are not copied or modified by Glovebox.
 
 ## Install
 
@@ -62,20 +64,20 @@ Requirements on the device:
    adb shell su -c "'echo YOUR-PASSWORD | /data/adb/modules/glovebox/bin/glovebox passwd'"
    ```
 
-3. Join the hotspot and open **http://192.168.0.254**. Glovebox adds this address to `br0` (the
-   vendor DHCP pool ends at .253) so it never collides with the vendor UI on 192.168.0.1.
+3. Join the hotspot and open **http://192.168.88.1:80**. On Xiaomi 14 Pro, the integrated AP
+   controller keeps this fixed address on the hotspot interface and Glovebox is the only port-80 WebUI.
 
-For a friendly name, resolve `glovebox.lan` to `192.168.0.254`, e.g. with mihomo:
+For a friendly name, resolve `glovebox.lan` to `192.168.88.1`, e.g. with mihomo:
 
 ```yaml
 hosts:
-  glovebox.lan: 192.168.0.254
+  glovebox.lan: 192.168.88.1
 ```
 
 ### HTTPS and installing as an app
 
 Browsers only install PWAs from secure origins. On first start Glovebox creates a local root CA in
-`/data/adb/glovebox/tls/` and serves HTTPS on `192.168.0.254:443`. The CA is **name-constrained**
+`/data/adb/glovebox/tls/` and serves HTTPS on `192.168.88.1:443`. The CA is **name-constrained**
 to the configured hostnames and listen IPs, so it cannot sign certificates for any other site even
 if its key leaks. The Device page has a download button and step-by-step instructions for iOS,
 Android, macOS and Windows; compare the SHA-256 fingerprint shown there before trusting it.
@@ -84,12 +86,11 @@ Prefer your own certificate? Set `tls_cert` / `tls_key`.
 
 ### Hotspot client limit
 
-Vendor resource overlays cap the SoftAP at 10 clients
-(`config_wifiHardwareSoftapMaxClientCount`). The module ships a static runtime resource overlay
-(`com.glovebox.wifi.overlay`, priority 900) that raises it to 32; the Device page offers values
-up to the limit the system reports (`dumpsys wifi`). The real ceiling also depends on the Wi-Fi
-firmware. Build with `NO_OVERLAY=1` to leave the vendor limit alone. If the hotspot misbehaves,
-delete `/data/adb/modules/glovebox/system` and reboot.
+On Xiaomi 14 Pro the integrated SoftApConfiguration helper requests 32 clients and the bundled
+Qualcomm driver profile enables the matching peer and IPA limits; the Device page reports the
+actual running value. The optional static resource overlay is retained for other Android routers.
+Build with `NO_OVERLAY=1` when the Android SDK/JDK is unavailable or to leave vendor overlays alone.
+If the hotspot misbehaves, delete `/data/adb/modules/glovebox/system` and reboot.
 
 ## Configuration
 
@@ -104,16 +105,18 @@ echo '{"tailscale_proxy":"Tailscale","tailscale_probe":"http://100.64.0.1/"}' \
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `listen` | `["192.168.0.254:80"]` | HTTP listen addresses |
-| `tls_listen` | `["192.168.0.254:443"]` | HTTPS listen addresses; empty disables HTTPS |
+| `platform` | `auto` | `xiaomi` or `zte`; auto detects `shennong` |
+| `listen` | `["192.168.88.1:80"]` | HTTP listen addresses |
+| `tls_listen` | `["192.168.88.1:443"]` | HTTPS listen addresses; empty disables HTTPS |
 | `tls_cert`, `tls_key` | | Custom certificate and key (PEM) instead of the local CA |
 | `hostnames` | `["glovebox.lan"]` | Names in issued certificates; the first is used for the HTTPS link |
-| `alias_addr`, `alias_dev` | `192.168.0.254/32`, `br0` | Address Glovebox adds to the LAN bridge; empty disables it |
-| `allow_cidrs` | `["192.168.0.0/24","127.0.0.0/8"]` | Source networks allowed to connect |
+| `alias_addr`, `alias_dev` | `192.168.88.1/32`, `wlan2` | Address Glovebox adds to the hotspot interface; empty disables it |
+| `allow_cidrs` | loopback plus the live `lan_dev` prefix | Source networks allowed to connect |
 | `zte_base`, `zte_db` | `http://192.168.0.1:8080`, vendor DB path | Vendor web API and the database holding its login hash |
-| `mihomo_api`, `mihomo_secret` | `http://127.0.0.1:9091` | mihomo external controller |
+| `mihomo_api`, `mihomo_secret`, `mihomo_insecure` | `https://127.0.0.1:9091` | mihomo controller (legacy ZTE; Xiaomi uses NetProxy CLI) |
 | `main_group` | first visible selector | Proxy group shown on the overview |
 | `box_dir` | `/data/adb/box` | Box for Root directory (logs, restart script) |
+| `netproxy_dir`, `turbo_dir` | `/data/adb/modules/netproxy`, `/data/adb/modules/glovebox` | Xiaomi NetProxy and integrated AP controller paths |
 | `tailscale_proxy`, `tailscale_probe` | | mihomo outbound and a tailnet URL to probe through it; both enable the Tailnet card |
 | `delay_url` | `https://www.gstatic.com/generate_204` | URL for latency tests |
 | `wan_prefixes`, `lan_dev` | `sipa_eth`, `rmnet`, `ccmni` / `br0` | Interfaces used for traffic rates |
@@ -125,9 +128,11 @@ module upgrades and uninstalls.
 ## How it works
 
 ```
- browser ──HTTP/HTTPS──▶ glovebox (root, 192.168.0.254)
-                           ├─ vendor web API   192.168.0.1:8080  (signal, SIM, usage, clients, Wi-Fi)
-                           ├─ mihomo REST API   127.0.0.1:9091   (groups, nodes, providers, connections)
+ browser ──HTTP/HTTPS──▶ glovebox (root, 192.168.88.1:80)
+                           ├─ Xiaomi Android/AP adapter + AP Turbo (fixed address, Wi-Fi tuning, clients)
+                           ├─ NetProxy netproxyctl (groups, nodes, subscriptions, mode, service status)
+                           ├─ vendor web API   192.168.0.1:8080  (ZTE signal, SIM, usage, clients, Wi-Fi)
+                           ├─ mihomo REST API   127.0.0.1:9091   (legacy ZTE groups, nodes, providers, connections)
                            ├─ /proc, /sys                       (rates, CPU, memory, battery, thermal)
                            └─ shell                              (box.service, logcat, reboot, date)
 ```

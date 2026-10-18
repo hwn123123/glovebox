@@ -14,14 +14,21 @@ const logTailBytes = 48 << 10
 
 // handleLogs returns the tail of one log source: mihomo, box (Box for Root), glovebox or system (logcat)
 func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	box := s.cfg.get().BoxDir
+	c := s.cfg.get()
+	box := c.BoxDir
+	proxyLog := filepath.Join(box, "run/clash.log")
+	boxLog := filepath.Join(box, "run/runs.log")
+	if s.platform == "xiaomi" {
+		proxyLog = filepath.Join(c.NetProxyDir, "logs/sing-box.log")
+		boxLog = filepath.Join(c.NetProxyDir, "logs/service.log")
+	}
 	var text string
 	var err error
 	switch r.URL.Query().Get("src") {
 	case "", "mihomo":
-		text, err = tailFile(filepath.Join(box, "run/clash.log"), logTailBytes)
+		text, err = tailFile(proxyLog, logTailBytes)
 	case "box":
-		text, err = tailFile(filepath.Join(box, "run/runs.log"), logTailBytes)
+		text, err = tailFile(boxLog, logTailBytes)
 	case "glovebox":
 		text, err = tailFile(filepath.Join(s.logDir, logFileName), logTailBytes)
 	case "system":

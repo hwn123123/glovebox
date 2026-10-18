@@ -509,8 +509,9 @@ function renderOverview(s) {
   ]);
 
   // cellular
-  K['cell.err'].hidden = !err.zte;
-  put('cell.err', err.zte ? '[ERR] goform: ' + err.zte : '');
+  const deviceErr = err.device || err.zte;
+  K['cell.err'].hidden = !deviceErr;
+  put('cell.err', deviceErr ? '[ERR] device: ' + deviceErr : '');
   put('cell.state', c.connected ? t('state.connected') : t('state.disconnected'));
   K['cell.state'].className = 'tag ' + (c.connected ? 'ok' : 'bad');
   put('cell.operator', c.operator || '—');
@@ -782,8 +783,16 @@ async function loadDevice(first) {
 function renderWiFi(d) {
   wifiLoaded = true;
   const max = d.max_supported || 10;
-  $('#wifi').innerHTML = (d.aps || []).map((ap) => {
+  let html = '';
+  if (d.turbo) {
+    const x = d.turbo;
+    html += `<article class="panel s12 turbo-card"><header class="ph"><span class="pi">⚡</span><h2>AP TURBO</h2><span class="sub">${t('turbo.summary')}</span><div class="pa"><span class="tag ${x.enabled ? 'ok' : 'warn'}">${x.enabled ? 'ON' : 'OFF'}</span></div></header><div class="pb"><div class="kv-grid"><div><span class="dim">${t('turbo.interface')}</span><b>${esc(x.interface || '—')}</b></div><div><span class="dim">${t('turbo.address')}</span><b>${esc(x.fixed_address || '—')}</b></div><div><span class="dim">${t('turbo.standard')}</span><b>${esc(x.standard || '—')}</b></div><div><span class="dim">${t('wifi.max')}</span><b>${esc((d.aps[0] || {}).max_clients || '—')}</b></div><div><span class="dim">${t('turbo.offload')}</span><b>${x.offload ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('turbo.country')}</span><b>${esc(x.country || '—')}</b></div></div><div class="actions"><button class="btn ${x.enabled ? '' : 'pri'}" data-turbo="${x.enabled ? 0 : 1}">${x.enabled ? t('turbo.disable') : t('turbo.enable')}</button><span class="note">${t('turbo.note')}</span></div></div></article>`;
+  }
+  html += (d.aps || []).map((ap) => {
     const cur = Number(ap.max_clients) || 0;
+    if (ap.editable === false) {
+      return `<article class="panel s12"><header class="ph"><span class="pi">WLAN</span><h2>WLAN · ${esc(ap.band)}</h2><div class="pa"><span class="tag ${ap.enabled ? 'ok' : ''}">${ap.enabled ? 'ON' : 'OFF'}</span></div></header><div class="pb"><dl class="kv cols"><dt>${t('wifi.ssid')}</dt><dd>${esc(ap.ssid || '—')}</dd><dt>${t('wifi.max')}</dt><dd>${esc(ap.max_clients || '—')} / ${max}</dd><dt>${t('wifi.auth')}</dt><dd>${esc(ap.auth_mode || '—')}</dd></dl></div></article>`;
+    }
     const opts = [];
     for (let i = 1; i <= Math.max(max, cur); i++) opts.push(`<option value="${i}"${i === cur ? ' selected' : ''}>${i}</option>`);
     return `<form class="panel wifi-form" data-chip="${esc(ap.chip)}" data-enabled="${ap.enabled ? 1 : 0}" data-band="${esc(ap.band)}" data-max="${cur}">
@@ -800,7 +809,21 @@ function renderWiFi(d) {
         <button class="btn pri" type="submit">${t('act.save')}</button>
       </div></form>`;
   }).join('');
+  $('#wifi').innerHTML = html;
 }
+
+$('#wifi').addEventListener('click', async (ev) => {
+  const b = ev.target.closest('[data-turbo]');
+  if (!b) return;
+  const enabled = b.dataset.turbo === '1';
+  if (!(await confirmBox(enabled ? t('turbo.confirmEnable') : t('turbo.confirmDisable'), { danger: !enabled }))) return;
+  await busy(b, null, async () => {
+    await api('/api/wifi/turbo', { enabled });
+    toast(enabled ? t('turbo.enabled') : t('turbo.disabled'));
+    wifiLoaded = false;
+    setTimeout(() => page === 'device' && loadDevice(true), 1800);
+  }).catch(fail);
+});
 
 $('#wifi').addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-showpw]');

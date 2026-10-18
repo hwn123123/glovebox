@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,11 +20,24 @@ type mihomoClient struct {
 	hc     *http.Client
 }
 
-func newMihomo(base, secret string) *mihomoClient {
+func newMihomo(base, secret string, insecure bool, certPEM, keyPEM []byte) *mihomoClient {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	var clientCert []tls.Certificate
+	if len(certPEM) > 0 && len(keyPEM) > 0 {
+		if cert, err := tls.X509KeyPair(certPEM, keyPEM); err == nil {
+			clientCert = []tls.Certificate{cert}
+		}
+	}
+	if insecure {
+		// The controller is loopback-only and NetProxy generates a local certificate.
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true, Certificates: clientCert} // #nosec G402 -- localhost only
+	} else if len(clientCert) > 0 {
+		tr.TLSClientConfig = &tls.Config{Certificates: clientCert}
+	}
 	return &mihomoClient{
 		base:   strings.TrimRight(base, "/"),
 		secret: secret,
-		hc:     &http.Client{Timeout: 20 * time.Second},
+		hc:     &http.Client{Timeout: 20 * time.Second, Transport: tr},
 	}
 }
 

@@ -24,10 +24,14 @@ cp -R module/. "$stage/"
 # Runtime resource overlay that raises the SoftAP client limit. Magisk mounts the module's
 # system/vendor onto /vendor, so it lands in /vendor/overlay.
 if [[ -z ${NO_OVERLAY:-} ]]; then
-  [[ -f overlay/GloveboxWifiOverlay.apk ]] || overlay/build.sh
-  mkdir -p "$stage/system/vendor/overlay/GloveboxWifiOverlay"
-  cp overlay/GloveboxWifiOverlay.apk "$stage/system/vendor/overlay/GloveboxWifiOverlay/"
-  chmod 644 "$stage/system/vendor/overlay/GloveboxWifiOverlay/GloveboxWifiOverlay.apk"
+  if [[ ! -f overlay/GloveboxWifiOverlay.apk ]] && ! overlay/build.sh; then
+    echo "warning: Android SDK/JDK unavailable; skipping optional client-limit overlay" >&2
+  fi
+  if [[ -f overlay/GloveboxWifiOverlay.apk ]]; then
+    mkdir -p "$stage/system/vendor/overlay/GloveboxWifiOverlay"
+    cp overlay/GloveboxWifiOverlay.apk "$stage/system/vendor/overlay/GloveboxWifiOverlay/"
+    chmod 644 "$stage/system/vendor/overlay/GloveboxWifiOverlay/GloveboxWifiOverlay.apk"
+  fi
 fi
 
 sed -i.bak -e "s/^version=.*/version=$ver/" -e "s/^versionCode=.*/versionCode=$(date +%y%m%d%H)/" "$stage/module.prop"

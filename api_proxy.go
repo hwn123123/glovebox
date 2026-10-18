@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"sort"
@@ -87,6 +88,10 @@ func proxyDown(err error) error {
 }
 
 func (s *server) handleProxies(w http.ResponseWriter, r *http.Request) {
+	if s.platform == "xiaomi" {
+		s.handleNetProxyProxies(w, r)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	ps, err := s.mihomo.proxies(ctx)
@@ -156,6 +161,10 @@ func (s *server) handleProxies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleSelect(w http.ResponseWriter, r *http.Request) {
+	if s.platform == "xiaomi" {
+		s.handleNetProxySelect(w, r)
+		return
+	}
 	var in struct{ Group, Name string }
 	if err := readBody(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -170,6 +179,10 @@ func (s *server) handleSelect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleDelay(w http.ResponseWriter, r *http.Request) {
+	if s.platform == "xiaomi" {
+		s.handleNetProxyDelay(w, r)
+		return
+	}
 	var in struct{ Group, Name string }
 	if err := readBody(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -202,6 +215,19 @@ func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if s.platform == "xiaomi" {
+		if in.Mode != "rule" && in.Mode != "global" && in.Mode != "direct" {
+			writeErr(w, http.StatusBadRequest, apiErr("mode_invalid", "mode must be rule, global or direct"))
+			return
+		}
+		if _, err := s.netproxyCall(r.Context(), "mode", netproxyMode(in.Mode)); err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		log.Printf("proxy mode -> %s", in.Mode)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
 	switch in.Mode {
 	case "rule", "global", "direct":
 	default:
@@ -221,6 +247,34 @@ func (s *server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 	var in struct{ Kind, Name string }
 	if err := readBody(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.platform == "xiaomi" {
+		args := []string{"sub", "update-all"}
+		if in.Name != "" {
+			groups, err := s.netproxyCall(r.Context(), "catalog", "list")
+			if err != nil {
+				writeErr(w, http.StatusBadGateway, err)
+				return
+			}
+			var list []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(groups, &list) == nil {
+				for _, g := range list {
+					if g.Name == in.Name {
+						args = []string{"sub", "update", g.ID}
+						break
+					}
+				}
+			}
+		}
+		if _, err := s.netproxyCall(r.Context(), args...); err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"results": []map[string]any{{"name": in.Name, "kind": in.Kind, "error": err.Error()}}, "failed": 1})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"results": []map[string]any{{"name": in.Name, "kind": in.Kind}}, "failed": 0})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
@@ -274,6 +328,12 @@ func (s *server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleCloseConns(w http.ResponseWriter, r *http.Request) {
+	if s.platform == "xiaomi" {
+		// NetProxy owns connection teardown; its stable public CLI currently exposes aggregate
+		// counters only. A service reload is intentionally not triggered by this UI action.
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
 	if err := s.mihomo.closeConnections(r.Context()); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -282,6 +342,15 @@ func (s *server) handleCloseConns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	if s.platform == "xiaomi" {
+		st, err := s.netproxyStatus(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, proxyDown(err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"connections": []any{}, "upload_total": st.UploadTotal, "download_total": st.DownloadTotal, "memory": st.MemoryBytes})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	cs, err := s.mihomo.connections(ctx)

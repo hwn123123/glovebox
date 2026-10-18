@@ -21,6 +21,9 @@ var maxClientRe = regexp.MustCompile(`MaximumSupportedClientNumber=(\d+)`)
 // (config_wifiHardwareSoftapMaxClientCount from the vendor overlays).
 // dumpsys wifi is slow, so the value is cached for 10 minutes.
 func (s *server) maxSupportedClients(ctx context.Context) int {
+	if s.platform == "xiaomi" {
+		return 32
+	}
 	if s.demo {
 		return 32
 	}
@@ -49,6 +52,7 @@ type apInfo struct {
 	AuthMode  string `json:"auth_mode"`
 	Hidden    bool   `json:"hidden"`
 	MaxClient string `json:"max_clients"`
+	Editable  bool   `json:"editable"`
 }
 
 func (s *server) queryAPs(ctx context.Context) ([]map[string]any, error) {
@@ -77,6 +81,19 @@ func bandName(chip string) string {
 }
 
 func (s *server) handleWiFi(w http.ResponseWriter, r *http.Request) {
+	if s.platform == "xiaomi" {
+		c := s.cfg.get()
+		runtime := readKV(filepath.Join(c.TurboDir, "state/runtime.status"))
+		max := runtime["MAX_CLIENTS"]
+		if max == "" {
+			max = "32"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"aps":           []apInfo{{Chip: "xiaomi", Band: "Wi-Fi hotspot", Enabled: runtime["AP_IFACE"] != "", SSID: runtime["SSID"], AuthMode: "Android SoftAP", MaxClient: max, Editable: false}},
+			"max_supported": 32, "turbo": s.turboStatus(),
+		})
+		return
+	}
 	aps, err := s.queryAPs(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
@@ -94,6 +111,7 @@ func (s *server) handleWiFi(w http.ResponseWriter, r *http.Request) {
 			AuthMode:  str(e["AuthMode"]),
 			Hidden:    str(e["ApBroadcastDisabled"]) == "1",
 			MaxClient: str(e["ApMaxStationNumber"]),
+			Editable:  true,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"aps": out, "max_supported": s.maxSupportedClients(r.Context())})
@@ -102,6 +120,10 @@ func (s *server) handleWiFi(w http.ResponseWriter, r *http.Request) {
 // handleSetWiFi changes one band's switch / SSID / password / limits. The request mirrors
 // what the vendor web UI sends (setAccessPointInfo in its service.js).
 func (s *server) handleSetWiFi(w http.ResponseWriter, r *http.Request) {
+	if s.platform == "xiaomi" {
+		writeErr(w, http.StatusNotImplemented, apiErr("wifi_android_managed", "Xiaomi hotspot settings are managed by Android; use the hotspot system settings"))
+		return
+	}
 	var in struct {
 		Chip     string `json:"chip"`
 		Enabled  bool   `json:"enabled"`
@@ -187,7 +209,50 @@ func (s *server) handleSetWiFi(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (s *server) handleSetTurbo(w http.ResponseWriter, r *http.Request) {
+	if s.platform != "xiaomi" {
+		writeErr(w, http.StatusNotImplemented, apiErr("turbo_unavailable", "hotspot turbo is only available on Xiaomi integration"))
+		return
+	}
+	var in struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := readBody(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	c := s.cfg.get()
+	action := "off"
+	if in.Enabled {
+		action = "on"
+	}
+	if s.demo {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	if err := startDetached("/system/bin/sh", filepath.Join(c.TurboDir, "scripts/wifi_turbo.sh"), action); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	log.Printf("hotspot turbo -> %v", in.Enabled)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (s *server) handleBoxRestart(w http.ResponseWriter, r *http.Request) {
+	if s.platform == "xiaomi" {
+		c := s.cfg.get()
+		if s.demo {
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		}
+		if err := startDetached(filepath.Join(c.NetProxyDir, "netproxyctl"), "service", "restart"); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		log.Printf("restarting NetProxy (%s service restart)", c.NetProxyDir)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
 	script := filepath.Join(s.cfg.get().BoxDir, "scripts/box.service")
 	if s.demo {
 		log.Printf("demo: skipping %s restart", script)
