@@ -163,6 +163,7 @@ func (s *server) routes() http.Handler {
 	authed("POST /api/proxies/mode", s.handleMode)
 	authed("POST /api/proxies/update", s.handleUpdateProviders)
 	authed("POST /api/proxies/close-connections", s.handleCloseConns)
+	authed("POST /api/proxies/service", s.handleNetProxyService)
 	authed("GET /api/connections", s.handleConnections)
 	authed("POST /api/tailscale/check", s.handleTSCheck)
 	authed("GET /api/clients", s.handleClients)

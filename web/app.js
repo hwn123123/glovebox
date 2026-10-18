@@ -649,6 +649,8 @@ function renderProxies(force) {
     b.classList.toggle('on', b.dataset.mode === d.mode);
     b.disabled = !proxyRunning;
   });
+  $$('[data-proxy-service="start"]').forEach((b) => { b.disabled = proxyRunning; });
+  $$('[data-proxy-service="stop"], [data-proxy-service="restart"]').forEach((b) => { b.disabled = !proxyRunning; });
   $('#btn-conns').disabled = !proxyRunning;
   const q = $('#node-filter').value.trim().toLowerCase();
   const sig = JSON.stringify([populatedGroups, d.state, d.error, [...openGroups], [...testing], q, lang]);
@@ -743,6 +745,21 @@ $('#mode').addEventListener('click', async (ev) => {
 });
 
 $('#node-filter').addEventListener('input', () => renderProxies());
+
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-proxy-service]');
+  if (!b) return;
+  const action = b.dataset.proxyService;
+  const msgKey = { start: 'proxy.serviceStart', stop: 'proxy.serviceStop', restart: 'proxy.serviceRestart' }[action];
+  busy(b, null, async () => {
+    await api('/api/proxies/service', { action });
+    toast(t(msgKey));
+    // start/restart are detached and need a moment to publish their status.
+    await new Promise((resolve) => setTimeout(resolve, action === 'stop' ? 400 : 1200));
+    await loadProxies(true);
+    statusTick();
+  }).catch(fail);
+});
 
 async function updateProviders(btn, body) {
   await busy(btn, t('act.updating'), async () => {

@@ -188,6 +188,33 @@ func parseNetproxyDelay(b json.RawMessage) (int, string) {
 	return -1, v.Target
 }
 
+// parseNetproxyDelays converts the batch node-delay response into the names the
+// web console uses. NetProxy prefixes item tags with the runtime group name
+// ("group/node"), while the UI displays just the node tag.
+func parseNetproxyDelays(b json.RawMessage) map[string]int {
+	var v struct {
+		Groups []struct {
+			Items []struct {
+				Tag   string `json:"tag"`
+				Delay int    `json:"url_test_delay"`
+			} `json:"items"`
+		} `json:"groups"`
+	}
+	out := map[string]int{}
+	if json.Unmarshal(b, &v) != nil {
+		return out
+	}
+	for _, group := range v.Groups {
+		for _, item := range group.Items {
+			name := selectedTag(item.Tag)
+			// A node without url_test_delay is unreachable. Keep it in the
+			// response with zero so the frontend renders the normal timeout state.
+			out[name] = item.Delay
+		}
+	}
+	return out
+}
+
 func parseNetproxyProviderGroups(b json.RawMessage) ([]netproxyGroup, error) {
 	var groups []netproxyGroup
 	if err := json.Unmarshal(b, &groups); err != nil {
@@ -225,12 +252,20 @@ func selectedTag(ref string) string {
 func (s *server) handleNetProxyProxies(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
-	lists, err := s.netproxyNodes(ctx)
+	st, err := s.netproxyStatus(ctx)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, proxyDown(err))
 		return
 	}
-	st, _ := s.netproxyStatus(ctx)
+	running := st.State == "ready" || st.State == "started"
+	var lists []netproxyNodeList
+	if running {
+		lists, err = s.netproxyNodes(ctx)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, proxyDown(err))
+			return
+		}
+	}
 	groups := make([]proxyGroup, 0, len(lists))
 	for _, item := range lists {
 		if item.Group.Name == "" {
@@ -255,11 +290,41 @@ func (s *server) handleNetProxyProxies(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mode := formatNetproxyMode(st.OutboundMode)
-	running := st.State == "ready" || st.State == "started"
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode": mode, "groups": groups, "providers": providers,
 		"running": running, "state": st.State, "backend": st.ConfiguredBackend, "error": st.Error,
 	})
+}
+
+func (s *server) handleNetProxyService(w http.ResponseWriter, r *http.Request) {
+	if s.platform != "xiaomi" {
+		writeErr(w, http.StatusNotImplemented, apiErr("netproxy_unavailable", "service controls require integrated NetProxy"))
+		return
+	}
+	var in struct {
+		Action string `json:"action"`
+	}
+	if err := readBody(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	action := strings.ToLower(strings.TrimSpace(in.Action))
+	switch action {
+	case "start", "stop", "restart":
+	default:
+		writeErr(w, http.StatusBadRequest, apiErr("service_action_invalid", "action must be start, stop or restart"))
+		return
+	}
+	if s.demo {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "action": action})
+		return
+	}
+	if err := startDetached(netproxyExecutable(s.cfg.get()), "service", action); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	log.Printf("NetProxy service -> %s", action)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "action": action})
 }
 
 func (s *server) handleNetProxySubscription(w http.ResponseWriter, r *http.Request) {
@@ -352,6 +417,39 @@ func (s *server) handleNetProxyDelay(w http.ResponseWriter, r *http.Request) {
 	lists, err := s.netproxyNodes(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	// A group-level test is a batch operation. Passing an empty node ref to
+	// NetProxy asks it to test every node in the active group; trying to derive
+	// a node from selected_node_ref is wrong because URL-test groups may have no
+	// manual selection at all.
+	if in.Group != "" && in.Name == "" {
+		st, e := s.netproxyStatus(r.Context())
+		if e != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"delays": map[string]int{}, "error": e.Error()})
+			return
+		}
+		found := false
+		for _, item := range lists {
+			if item.Group.Name == in.Group {
+				found = true
+				if item.Group.ID != st.ActiveGroupID {
+					writeJSON(w, http.StatusOK, map[string]any{"delays": map[string]int{}, "error": "only the active node group can be tested"})
+					return
+				}
+				break
+			}
+		}
+		if !found {
+			writeJSON(w, http.StatusOK, map[string]any{"delays": map[string]int{}, "error": "node group does not exist"})
+			return
+		}
+		b, e := s.netproxyCall(r.Context(), "node", "delay")
+		if e != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"delays": map[string]int{}, "error": e.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"delays": parseNetproxyDelays(b)})
 		return
 	}
 	for _, item := range lists {
