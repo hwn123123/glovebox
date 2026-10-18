@@ -25,6 +25,7 @@ WEB_PORT="80"
 TURBO_COUNTRY_CODE="US"
 LOG_FILE="$STATE_DIR/daemon.log"
 RUNTIME_CACHE="$STATE_DIR/runtime.status"
+USB_FUNCTION_FILE="$STATE_DIR/usb_functions"
 
 [ -x "$BUSYBOX" ] || BUSYBOX="busybox"
 mkdir -p "$STATE_DIR"
@@ -594,11 +595,51 @@ set_hotspot() {
 
 set_usb_tether() {
     if [ "$1" = "1" ]; then
-        run_softap_helper start-usb ""
-        setup_usb_web_endpoint
+        capture_usb_function
+        # NetworkStack normally selects the function through the Xiaomi overlay.
+        # Some HyperOS builds accept the tether request but leave the gadget at
+        # adb; give the native path a short window, then use the vendor-supported
+        # single-function switch as a root fallback.
+        run_softap_helper start-usb "" || true
+        if ! setup_usb_web_endpoint 6; then
+            force_usb_gadget
+            setup_usb_web_endpoint 20 || true
+        fi
     else
-        run_softap_helper stop-usb ""
+        run_softap_helper stop-usb "" || true
+        restore_usb_function
     fi
+}
+
+capture_usb_function() {
+    [ -s "$USB_FUNCTION_FILE" ] && return 0
+    current=$(getprop sys.usb.config 2>/dev/null)
+    [ -n "$current" ] && printf '%s\n' "$current" > "$USB_FUNCTION_FILE"
+}
+
+usb_gadget_function() {
+    # Xiaomi's UsbService rejects the usual ncm,adb/rndis,adb combinations,
+    # while accepting the single network function. The overlay's value 1 means
+    # NCM; 0 is the Android RNDIS fallback.
+    forced=$(settings get global tether_force_usb_functions 2>/dev/null)
+    [ "$forced" = "0" ] && echo rndis || echo ncm
+}
+
+force_usb_gadget() {
+    function=$(usb_gadget_function)
+    log_msg "USB tether request accepted without an interface; switching gadget to $function"
+    /system/bin/svc usb setFunctions "$function" >/dev/null 2>&1 || \
+        svc usb setFunctions "$function" >/dev/null 2>&1 || true
+}
+
+restore_usb_function() {
+    [ -s "$USB_FUNCTION_FILE" ] || return 0
+    saved=$(cat "$USB_FUNCTION_FILE" 2>/dev/null)
+    rm -f "$USB_FUNCTION_FILE"
+    [ -n "$saved" ] || saved=adb
+    log_msg "restoring USB gadget functions to $saved"
+    /system/bin/svc usb setFunctions "$saved" >/dev/null 2>&1 || \
+        svc usb setFunctions "$saved" >/dev/null 2>&1 || true
 }
 
 get_usb_iface() {
@@ -611,7 +652,8 @@ get_usb_iface() {
 setup_usb_web_endpoint() {
     attempts=0
     usb_iface=""
-    while [ "$attempts" -lt 20 ]; do
+    max_attempts="${1:-20}"
+    while [ "$attempts" -lt "$max_attempts" ]; do
         usb_iface=$(get_usb_iface)
         [ -n "$usb_iface" ] && break
         attempts=$((attempts + 1))
@@ -650,8 +692,12 @@ boot_router() {
     if [ "$auto_usb" = "1" ]; then
         # Propagate USB failures to Glovebox so its bounded retry loop can run.
         # Android remains the only DHCP/NAT owner.
-        run_softap_helper start-usb ""
-        setup_usb_web_endpoint
+        capture_usb_function
+        run_softap_helper start-usb "" || true
+        if ! setup_usb_web_endpoint 6; then
+            force_usb_gadget
+            setup_usb_web_endpoint 20 || true
+        fi
     fi
     refresh_runtime_cache
     setup_web_endpoint || true
@@ -688,6 +734,8 @@ cleanup_all() {
     echo 0 > "$STATUS_FILE"
     set_auto_hotspot 0
     stop_daemon
+    run_softap_helper stop-usb "" || true
+    restore_usb_function
     run_softap_helper restore "" || true
     restore_settings
     unmount_driver_config
