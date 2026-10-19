@@ -39,12 +39,16 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin || url.pathname.startsWith('/api/') || url.pathname === '/ca.crt') return;
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
-    // the shell is a single page with hash routing, so every navigation gets the cached index
+    // Prefer the installed release. Cache is an offline fallback, never a reason to serve an
+    // old HTML shell with a newer script after an in-place module upgrade.
     const key = req.mode === 'navigate' ? '/' : req;
-    const hit = await cache.match(key, { ignoreSearch: true });
-    if (hit) return hit;
-    const res = await fetch(req);
-    if (res.ok && res.type === 'basic') cache.put(key, res.clone());
-    return res;
+    try {
+      const res = await fetch(req);
+      if (res.ok && res.type === 'basic') await cache.put(key, res.clone());
+      return res;
+    } catch {
+      const hit = await cache.match(key, { ignoreSearch: true });
+      return hit || Response.error();
+    }
   })());
 });

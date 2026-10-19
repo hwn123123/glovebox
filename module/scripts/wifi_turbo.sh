@@ -254,9 +254,13 @@ run_softap_helper() {
     action="$1"
     shift
     [ -f "$HELPER_JAR" ] || return 1
+    helper_timeout=30
+    case "$action" in
+        start-usb|stop-usb) helper_timeout=8 ;;
+    esac
     # A dead early-boot TetheringManager binding can otherwise block app_process
-    # forever. BusyBox timeout also terminates the helper's process group.
-    CLASSPATH="$HELPER_JAR" "$BUSYBOX" timeout -k 2 30 app_process /system/bin \
+    # forever. USB leaves enough time for its gadget fallback within 35 seconds.
+    CLASSPATH="$HELPER_JAR" "$BUSYBOX" timeout -k 2 "$helper_timeout" app_process /system/bin \
         com.wifiapturbo.SoftApConfigurator "$action" "$SOFTAP_BACKUP" "$@"
 }
 
@@ -632,6 +636,10 @@ set_hotspot() {
 
 set_usb_tether() {
     set_auto_usb "$1"
+    set_usb_runtime "$1"
+}
+
+set_usb_runtime() {
     if [ "$1" = "1" ]; then
         capture_usb_function
         # NetworkStack normally selects the function through the Xiaomi overlay.
@@ -789,8 +797,9 @@ case "$1" in
     webui) setup_web_endpoint && echo "WebUI: http://$WEB_IP/" ;;
     wifi) set_hotspot "$2" "$3" "$4" "$5" "$6" ;;
     usb) set_usb_tether "$2" ;;
+    usb-runtime) set_usb_runtime "$2" ;;
     boot) boot_router "$2" "$3" "$4" "$5" "$6" ;;
     daemon) daemon_loop ;;
     cleanup) cleanup_all ;;
-	*) echo "Usage: $0 {on|off|status|webui|wifi|usb|boot|daemon|cleanup}"; exit 1 ;;
+    *) echo "Usage: $0 {on|off|status|webui|wifi|usb|usb-runtime|boot|daemon|cleanup}"; exit 1 ;;
 esac

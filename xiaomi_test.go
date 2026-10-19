@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestXiaomiSignalParsingSkipsInvalidPlaceholders(t *testing.T) {
 	raw := `CellSignalStrengthNr:{ csiRsrp = 2147483647 csiRsrq = 2147483647 csiSinr = 2147483647 ssRsrp = -72 ssRsrq = -11 ssSinr = 18 level=3 }`
@@ -60,5 +64,30 @@ func TestXiaomiNetSamplerCountsUSBAndWiFiDownstreams(t *testing.T) {
 	}
 	if n.isLAN("rmnet_data1") {
 		t.Fatal("WAN interface counted as downstream")
+	}
+}
+
+func TestNetProxyClashControllerRequiresLoopback(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "config", "singbox")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.json")
+	write := func(address string) {
+		t.Helper()
+		content := `{"experimental":{"clash_api":{"external_controller":"` + address + `","secret":"test-secret"}}}`
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("127.0.0.1:9999")
+	base, secret, err := netproxyClashController(Config{NetProxyDir: root})
+	if err != nil || base != "http://127.0.0.1:9999" || secret != "test-secret" {
+		t.Fatalf("loopback controller = %q, %q, %v", base, secret, err)
+	}
+	write("0.0.0.0:9999")
+	if _, _, err := netproxyClashController(Config{NetProxyDir: root}); err == nil {
+		t.Fatal("non-loopback Clash API should be rejected")
 	}
 }

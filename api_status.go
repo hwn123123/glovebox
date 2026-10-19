@@ -253,16 +253,38 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			proxy["state"] = st.State
 			proxy["error"] = st.Error
 			proxy["running"] = st.State == "ready" || st.State == "started"
-			proxy["version"] = "NetProxy / " + st.ConfiguredBackend
+			backend := st.ConfiguredBackend
+			if st.ActiveBackend != nil {
+				backend = *st.ActiveBackend
+			}
+			proxy["version"] = "NetProxy / " + backend
+			proxy["configured_backend"] = st.ConfiguredBackend
+			proxy["active_backend"] = st.ActiveBackend
 			proxy["mode"] = formatNetproxyMode(st.OutboundMode)
 			proxy["group"] = st.ActiveGroupName
 			if st.SelectedNodeRef != "" {
 				proxy["now"] = []string{selectedTag(st.SelectedNodeRef)}
 			}
-			proxy["connections"] = st.ConnectionsIn + st.ConnectionsOut
 			proxy["upload_total"] = st.UploadTotal
 			proxy["download_total"] = st.DownloadTotal
 			proxy["memory"] = st.MemoryBytes
+			proxy["uptime_seconds"] = st.UptimeSeconds
+			proxy["worker_state"] = st.WorkerState
+			if autoStart, e := netproxyAutostartFromFile(c); e == nil {
+				proxy["auto_start"] = autoStart
+			}
+			// NetProxy's connections_in/out fields describe runtime endpoints, not
+			// live flows. Only the loopback Clash API has the authoritative list.
+			if client, e := s.netproxyClashClient(); e == nil {
+				connCtx, connCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+				if connections, connErr := client.connections(connCtx); connErr == nil {
+					proxy["connections"] = len(connections.Connections)
+					proxy["upload_total"] = connections.UploadTotal
+					proxy["download_total"] = connections.DownloadTotal
+					proxy["memory"] = connections.Memory
+				}
+				connCancel()
+			}
 		}
 	} else if v, err := s.mihomo.version(mctx); err != nil {
 		errs["mihomo"] = err.Error()

@@ -44,7 +44,9 @@ if [ ! -f \$MOD/netproxy/config/module.json ]; then
 else
   mkdir -p \$MOD/netproxy/bin \$MOD/netproxy/config/singbox/rules/remote
   cp -f $tmp/netproxy/bin/netproxyctl $tmp/netproxy/bin/sing-box $tmp/netproxy/bin/android-platform.dex \$MOD/netproxy/bin/
-  cp -f $tmp/netproxy/LICENSE $tmp/netproxy/NOTICE $tmp/netproxy/SOURCE.md \$MOD/netproxy/
+  cp -f $tmp/netproxy/LICENSE $tmp/netproxy/NOTICE \$MOD/netproxy/
+  rm -rf \$MOD/netproxy/patches
+  rm -f \$MOD/netproxy/SOURCE.md
   cp -R $tmp/netproxy/config/singbox/rules/remote/. \$MOD/netproxy/config/singbox/rules/remote/
 fi
 chmod 755 \$MOD/netproxy/bin/netproxyctl \$MOD/netproxy/bin/sing-box

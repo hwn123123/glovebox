@@ -219,6 +219,7 @@ type mihomoConns struct {
 	DownloadTotal int64 `json:"downloadTotal"`
 	UploadTotal   int64 `json:"uploadTotal"`
 	Connections   []struct {
+		ID       string `json:"id"`
 		Metadata struct {
 			Network   string `json:"network"`
 			SourceIP  string `json:"sourceIP"`
@@ -245,4 +246,8 @@ func (m *mihomoClient) connections(ctx context.Context) (*mihomoConns, error) {
 
 func (m *mihomoClient) closeConnections(ctx context.Context) error {
 	return m.call(ctx, http.MethodDelete, "/connections", nil, nil)
+}
+
+func (m *mihomoClient) closeConnection(ctx context.Context, id string) error {
+	return m.call(ctx, http.MethodDelete, "/connections/"+url.PathEscape(id), nil, nil)
 }

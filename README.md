@@ -25,11 +25,12 @@ English · [简体中文](README.zh-CN.md)
 | Page | What you get |
 | --- | --- |
 | Overview | Live WAN throughput chart, signal (RSRP/SINR/band) with history, egress node and proxy chain, Tailscale reachability probe, monthly data usage, battery/CPU/memory/temperature gauges, connected clients |
-| Proxy | mihomo or embedded NetProxy groups and nodes, add/activate/remove subscriptions, switch nodes, latency tests, rule/global/direct mode, proxy health and traffic totals |
-| Device | Android-managed hotspot and USB tethering, AP Turbo status, fixed `192.168.88.1` management address, SSID/password and Wi-Fi 6/32-client tuning, connected devices, HTTPS & app install guide, restart proxy, reboot, sync the device clock, console password, theme/language |
+| Cellular | Live registration and data state, modem-reported serving/candidate cells, on-demand network scans, carrier components, automatic/manual PLMN selection with offline safety rollback |
+| Proxy | mihomo or embedded NetProxy groups and nodes, complete start/stop/restart and boot policy, subscriptions with scheduling/history, node selection and batch latency tests, rule/ad-block/global/direct modes, TUN/eBPF and app/root policy, live connections and traffic totals |
+| Device | Android-managed hotspot and USB tethering with separate runtime/boot controls, AP Turbo status, fixed `192.168.88.1` management address, SSID/password and Wi-Fi 6/32-client tuning, connected devices, HTTPS & app install guide, reboot, clock sync, console password, theme/language |
 | Logs | mihomo, Box for Root, Glovebox and Android logcat — level filter, grep with highlight, follow/pause, wrap |
 
-Keyboard: `1`–`4` switch pages, `/` focuses the filter.
+Keyboard: `1`–`5` switch pages, `/` focuses the filter.
 
 <p>
 <img src="docs/screenshots/en/proxy.png" width="49%" alt="Proxy">
@@ -54,6 +55,8 @@ Requirements on the device:
   external controller on `127.0.0.1:9091`
 - Xiaomi 14 Pro: Glovebox includes NetProxy 8.6.1 and sing-box. A previously installed standalone
   NetProxy module is stopped and archived outside Magisk's active module directory on first start.
+  The embedded converter carries a documented compatibility patch for pinned-certificate Hysteria2
+  subscriptions when the bundled sing-box core uses ChromeParrot.
 
 ## Install
 
@@ -120,7 +123,7 @@ echo '{"tailscale_proxy":"Tailscale","tailscale_probe":"http://100.64.0.1/"}' \
 | `box_dir` | `/data/adb/box` | Box for Root directory (logs, restart script) |
 | `netproxy_dir`, `turbo_dir` | `/data/adb/modules/glovebox/netproxy`, `/data/adb/modules/glovebox` | Embedded NetProxy and integrated AP controller paths |
 | `hotspot_ssid`, `hotspot_password`, `hotspot_hidden` | `nwrt`, `1234567890`, `false` | Android system hotspot profile managed from the Device page |
-| `auto_start_hotspot`, `auto_start_usb_tether` | `true`, `true` | Start Android hotspot and USB tethering after boot; Android NetworkStack remains the DHCP/NAT owner |
+| `auto_start_hotspot`, `auto_start_usb_tether` | `true`, `true` | Restore Android hotspot and USB tethering after boot; USB runtime and boot policy can be controlled independently, while Android NetworkStack remains the only DHCP/NAT owner |
 | `tailscale_proxy`, `tailscale_probe` | | mihomo outbound and a tailnet URL to probe through it; both enable the Tailnet card |
 | `delay_url` | `https://www.gstatic.com/generate_204` | URL for latency tests |
 | `wan_prefixes`, `lan_dev` | `sipa_eth`, `rmnet`, `ccmni` / `br0` | Interfaces used for traffic rates |

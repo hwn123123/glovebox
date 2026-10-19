@@ -1,0 +1,63 @@
+diff --git a/src/native/netproxy/internal/convert/convert.go b/src/native/netproxy/internal/convert/convert.go
+index f423c75..4b9cca6 100644
+--- a/src/native/netproxy/internal/convert/convert.go
++++ b/src/native/netproxy/internal/convert/convert.go
+@@ -37,6 +37,7 @@ func Link(ctx context.Context, link string, allowInsecure bool) (provider.ParseR
+ 	}
+ 	document := provider.Document{Outbounds: []option.Outbound{outbound}}
+ 	provider.NormalizeTags(&document)
++	applyProtocolCompatibility(&document)
+ 	if allowInsecure {
+ 		applyAllowInsecure(&document)
+ 	}
+@@ -140,6 +141,7 @@ func parseRaw(ctx context.Context, content string, allowInsecure bool) (provider
+ 
+ func finish(document provider.Document, diagnostics []provider.Diagnostic, allowInsecure bool) (provider.ParseResult, error) {
+ 	provider.NormalizeTags(&document)
++	applyProtocolCompatibility(&document)
+ 	if allowInsecure {
+ 		applyAllowInsecure(&document)
+ 	}
+@@ -156,6 +158,18 @@ func finish(document provider.Document, diagnostics []provider.Diagnostic, allow
+ 	return provider.ParseResult{Document: document, Diagnostics: diagnostics}, nil
+ }
+ 
++// applyProtocolCompatibility 在持久化前消除已知的内核协议选项冲突。
++func applyProtocolCompatibility(document *provider.Document) {
++	for index := range document.Outbounds {
++		options, loaded := document.Outbounds[index].Options.(*option.Hysteria2OutboundOptions)
++		if !loaded || options.TLS == nil || options.TLS.CertificatePinSHA256 == "" {
++			continue
++		}
++		// ChromeParrot 不支持 tls.Config.VerifyConnection，而证书钉扎必须使用该回调。
++		options.DisableChromeParrot = true
++	}
++}
++
+ func parseLink(link string) (option.Outbound, error) {
+ 	if link == "" {
+ 		return option.Outbound{}, errors.New("empty link")
+diff --git a/src/native/netproxy/internal/convert/convert_test.go b/src/native/netproxy/internal/convert/convert_test.go
+index efc6930..cf02c60 100644
+--- a/src/native/netproxy/internal/convert/convert_test.go
++++ b/src/native/netproxy/internal/convert/convert_test.go
+@@ -84,3 +84,19 @@ func TestAllowInsecureIsExplicit(t *testing.T) {
+ 		t.Fatal("allow-insecure did not update TLS options")
+ 	}
+ }
++
++func TestHysteria2CertificatePinDisablesChromeParrot(t *testing.T) {
++	content := `{"outbounds":[{"type":"hysteria2","tag":"pinned","server":"example.com","server_port":443,"password":"test","tls":{"enabled":true,"server_name":"example.com","certificate_pin_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},{"type":"hysteria2","tag":"standard","server":"example.net","server_port":443,"password":"test","tls":{"enabled":true,"server_name":"example.net"}}]}`
++	result, err := convert.Content(context.Background(), content, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++	pinned := result.Document.Outbounds[0].Options.(*option.Hysteria2OutboundOptions)
++	if !pinned.DisableChromeParrot {
++		t.Fatal("带证书钉扎的 Hysteria2 节点必须关闭 ChromeParrot")
++	}
++	standard := result.Document.Outbounds[1].Options.(*option.Hysteria2OutboundOptions)
++	if standard.DisableChromeParrot {
++		t.Fatal("普通 Hysteria2 节点不应改变 ChromeParrot 默认行为")
++	}
++}

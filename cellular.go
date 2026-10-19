@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -61,6 +62,8 @@ type cellularSnapshot struct {
 	Cells              []cellularCell     `json:"cells"`
 	Aggregation        []carrierComponent `json:"aggregation"`
 }
+
+const cellScanTTL = 5 * time.Minute
 
 func parseCellHelper(raw string) (cellularSnapshot, error) {
 	out := cellularSnapshot{ExactLockSupported: false, ScanSupported: true, Cells: []cellularCell{}, Aggregation: []carrierComponent{}}
@@ -216,9 +219,12 @@ func (s *server) cellularStatus(ctx context.Context, fresh bool) (cellularSnapsh
 			snap.Cells[i].Source = "live"
 			snap.Cells[i].LastSeen = time.Now().Format(time.RFC3339)
 		}
-		snap.Cells = mergeCellLists(snap.Cells, s.cellScan)
-		if !s.cellScanAt.IsZero() {
+		if !s.cellScanAt.IsZero() && time.Since(s.cellScanAt) <= cellScanTTL {
+			snap.Cells = mergeCellLists(snap.Cells, s.cellScan)
 			snap.ScanTime = s.cellScanAt.Format(time.RFC3339)
+		} else if !s.cellScanAt.IsZero() {
+			s.cellScan = nil
+			s.cellScanAt = time.Time{}
 		}
 		dump, _ := run(ctx, 4*time.Second, "dumpsys", "telephony.registry")
 		service := parseXiaomiServiceState(dump)
@@ -346,6 +352,8 @@ func (s *server) handleCellSelection(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, apiErr("selection_mode_invalid", "selection mode must be automatic or manual"))
 		return
 	}
+	s.cellControlMu.Lock()
+	defer s.cellControlMu.Unlock()
 	out, err := s.runCellHelper(r.Context(), args...)
 	if err != nil {
 		writeErr(w, http.StatusServiceUnavailable, err)
@@ -353,6 +361,52 @@ func (s *server) handleCellSelection(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cellMu.Lock()
 	s.cellAt = time.Time{}
+	// A carrier-selection change invalidates all previous scan candidates.
+	// Keeping them would make an old observation look currently reachable.
+	s.cellScan = nil
+	s.cellScanAt = time.Time{}
+	s.cellSelectionID++
+	selectionID := s.cellSelectionID
 	s.cellMu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": strings.TrimSpace(out)})
+	manual := strings.EqualFold(strings.TrimSpace(in.Mode), "manual")
+	rollbackSeconds := 0
+	if manual {
+		rollbackSeconds = 30
+		go s.rollbackFailedManualSelection(selectionID, in.PLMN)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "result": strings.TrimSpace(out),
+		"safety_rollback_seconds": rollbackSeconds,
+	})
+}
+
+// rollbackFailedManualSelection keeps a failed carrier choice from stranding the router offline.
+func (s *server) rollbackFailedManualSelection(selectionID uint64, plmn string) {
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	<-timer.C
+
+	s.cellControlMu.Lock()
+	defer s.cellControlMu.Unlock()
+	s.cellMu.Lock()
+	currentSelectionID := s.cellSelectionID
+	s.cellMu.Unlock()
+	if currentSelectionID != selectionID {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Second)
+	defer cancel()
+	snapshot, err := s.cellularStatus(ctx, true)
+	if err != nil || snapshot.SelectionMode != "manual" || snapshot.DataConnected {
+		return
+	}
+	if _, err := s.runCellHelper(ctx, "auto"); err != nil {
+		log.Printf("manual PLMN %s failed and automatic rollback failed: %v", plmn, err)
+		return
+	}
+	s.cellMu.Lock()
+	s.cellSelectionID++
+	s.cellAt = time.Time{}
+	s.cellMu.Unlock()
+	log.Printf("manual PLMN %s had no data after 30s; restored automatic selection", plmn)
 }

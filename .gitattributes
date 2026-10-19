@@ -3,3 +3,4 @@
 *.srs binary
 module/netproxy/bin/netproxyctl binary
 module/netproxy/bin/sing-box binary
+*.patch -whitespace

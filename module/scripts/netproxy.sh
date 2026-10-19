@@ -14,6 +14,12 @@ prepare_runtime() {
     chmod 700 "$PROXY/config" "$PROXY/data" "$PROXY/runtime" "$PROXY/logs" 2>/dev/null || true
     chmod 755 "$PROXY/bin/netproxyctl" "$PROXY/bin/sing-box"
     chmod 644 "$PROXY/bin/android-platform.dex"
+	# The management API stays loopback-only. Initializing its credentials lets
+	# the upstream Worker expose health and subscription scheduling even while
+	# the sing-box core is intentionally stopped.
+	if [ ! -f "$PROXY/config/api.json" ]; then
+		"$CONTROL" --json --timeout 30s api init >/dev/null
+	fi
 }
 
 stop_instance() {
@@ -43,19 +49,29 @@ migrate_legacy() {
 boot_proxy() {
     migrate_legacy
     prepare_runtime
+	# NetProxy reads config/module.json itself. auto_start=false still brings up
+	# the Worker/API, but deliberately leaves the forwarding core stopped.
     "$CONTROL" __internal boot --module-dir "$PROXY"
 }
 
 case "${1:-boot}" in
-    boot|start)
+    boot)
         boot_proxy
         ;;
+    start)
+		prepare_runtime
+		"$CONTROL" --json --timeout 40s service start
+        ;;
     stop)
-        stop_instance "$PROXY"
+		prepare_runtime
+		"$CONTROL" --json --timeout 20s service stop
         ;;
     restart)
         prepare_runtime
-        "$CONTROL" --json --timeout 45s service restart
+		"$CONTROL" --json --timeout 40s service restart
+        ;;
+	shutdown)
+		stop_instance "$PROXY"
         ;;
     status)
         "$CONTROL" --json --timeout 10s service status
@@ -64,7 +80,7 @@ case "${1:-boot}" in
         migrate_legacy
         ;;
     *)
-        echo "usage: $0 boot|start|stop|restart|status|migrate" >&2
+		echo "usage: $0 boot|start|stop|restart|shutdown|status|migrate" >&2
         exit 2
         ;;
 esac

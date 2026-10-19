@@ -6,6 +6,18 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+// A startup exception must never leave the console pretending that it is still connecting.
+// Keep this handler before feature wiring so an optional control cannot hide a fatal error.
+function showStartupFailure(reason) {
+  const app = $('#app');
+  const boot = $('#gate-boot');
+  if (!boot || (app && !app.hidden)) return;
+  const message = reason instanceof Error ? reason.message : String(reason || 'unknown error');
+  boot.innerHTML = `<span class="bad-t">[FAIL]</span> ${esc(message)}<span class="caret"></span>`;
+}
+addEventListener('error', (event) => showStartupFailure(event.error || event.message));
+addEventListener('unhandledrejection', (event) => showStartupFailure(event.reason));
+
 /* ---------- preferences ---------- */
 
 const store = {
@@ -624,6 +636,7 @@ function renderCells(d) {
   S.cells = d;
   const cells = d.cells || [], ca = d.aggregation || [];
   const serving = cells.filter((c) => c.registered);
+  const servingPLMNs = new Set(serving.map(cellPLMN).filter(Boolean));
   const radioRegistered = !!d.radio_registered;
   const dataConnected = !!d.data_connected;
   const radioLabel = d.radio_network_type ? tEnum('net', d.radio_network_type) : '—';
@@ -651,6 +664,7 @@ function renderCells(d) {
     <th>PCI</th><th>ARFCN</th><th>${t('cells.band')}</th><th>${t('cells.signal')}</th><th class="num">${t('cells.action')}</th>
   </tr></thead><tbody>${cells.map((c) => {
     const plmn = cellPLMN(c);
+    const currentNetwork = servingPLMNs.has(plmn);
     const signal = c.rsrp || c.dbm;
     return `<tr class="${c.registered ? 'serving' : ''}">
       <td><span class="cell-role"><i class="dot ${c.registered ? 'ok' : ''}"></i>${t(c.registered ? 'cells.serving' : c.source === 'scan' ? 'cells.scanned' : 'cells.neighbour')}</span>${c.source === 'scan' && c.last_seen ? `<span class="sub">${relTime(c.last_seen)}</span>` : ''}</td>
@@ -659,7 +673,7 @@ function renderCells(d) {
       <td class="cell-id">${esc(c.cell_id || '—')}</td><td>${esc(c.tac || '—')}</td><td>${esc(c.pci || '—')}</td>
       <td>${esc(c.arfcn || '—')}</td><td>${esc(c.bands || '—')}</td>
       <td><span class="cell-signal"><b>${cellValue(signal, ' dBm')}</b><small>RSRQ ${cellValue(c.rsrq, ' dB')} · SINR ${cellValue(c.sinr, ' dB')}</small></span></td>
-      <td class="num">${plmn ? `<button class="btn sm" data-cell-plmn="${esc(plmn)}" data-cell-name="${esc(c.operator || plmn)}"${d.selection_mode === 'manual' && c.registered ? ' disabled' : ''}>${t('cells.selectNetwork')}</button>` : '—'}</td>
+      <td class="num">${plmn ? `<button class="btn sm" data-cell-plmn="${esc(plmn)}" data-cell-name="${esc(c.operator || plmn)}"${currentNetwork ? ' disabled' : ''}>${t(currentNetwork ? 'cells.currentNetwork' : 'cells.selectNetwork')}</button>` : '—'}</td>
     </tr>`;
   }).join('')}</tbody></table>` : `<p class="empty">${t('cells.empty')}</p>`;
 
@@ -745,15 +759,30 @@ function renderProxies(force) {
   const runtimeError = !proxyRunning && d.error ? d.error : '';
   $('#proxy-err').hidden = !runtimeError;
   $('#proxy-err').textContent = runtimeError ? `[ERR] ${proxyCoreName().toLowerCase()}: ${runtimeError}` : '';
+	const availableModes = Array.isArray(d.available_modes) ? d.available_modes : [];
   $$('#mode button').forEach((b) => {
+		b.hidden = availableModes.length > 0 && !availableModes.includes(b.dataset.mode);
     b.classList.toggle('on', b.dataset.mode === d.mode);
     b.disabled = !proxyRunning;
   });
   $$('[data-proxy-service="start"]').forEach((b) => { b.disabled = proxyRunning; });
   $$('[data-proxy-service="stop"], [data-proxy-service="restart"]').forEach((b) => { b.disabled = !proxyRunning; });
+  const auto = $('#btn-proxy-autostart');
+	const autoKnown = d.auto_start_known !== false;
+  const autoStart = autoKnown && d.auto_start === true;
+  auto.textContent = `${t('proxy.autostart')}: ${autoKnown ? (autoStart ? t('proxy.autostartOn') : t('proxy.autostartOff')) : '—'}`;
+  auto.classList.toggle('pri', autoStart);
+	auto.classList.toggle('danger', autoKnown && !autoStart);
+  auto.disabled = !autoKnown;
   $('#btn-conns').disabled = !proxyRunning;
+	$('#proxy-runtime').textContent = String(d.state || '—').toUpperCase();
+	$('#proxy-backend').textContent = d.active_backend || `${d.backend || '—'} (${t('proxy.configured')})`;
+	$('#proxy-worker').textContent = String(d.worker_state || '—').toUpperCase();
+	$('#proxy-uptime').textContent = d.uptime_seconds ? fmtDur(d.uptime_seconds) : '—';
+	$('#proxy-pid').textContent = d.pid || '—';
+	$('#proxy-boot-policy').textContent = autoKnown ? (autoStart ? t('proxy.autostartOn') : t('proxy.autostartOff')) : '—';
   const q = $('#node-filter').value.trim().toLowerCase();
-  const sig = JSON.stringify([populatedGroups, d.state, d.error, [...openGroups], [...testing], q, lang]);
+	const sig = JSON.stringify([populatedGroups, d.providers, d.state, d.error, d.auto_start, d.settings, [...openGroups], [...testing], q, lang]);
   if (sig === proxySig && !force) return;
   proxySig = sig;
   const html = populatedGroups.map((g) => {
@@ -784,9 +813,10 @@ function renderProxies(force) {
   $('#groups').innerHTML = html || `<div class="panel pad empty-state"><b>${t(q ? 'proxy.noMatch' : 'proxy.empty')}</b>${q ? '' : `<span>${t('proxy.emptyHint')}</span>`}</div>`;
   $('#providers').innerHTML = (d.providers || []).length
     ? `<table><thead><tr><th>${t('th.name')}</th><th>${t('th.kind')}</th><th class="num">${t('th.count')}</th><th class="num">${t('th.updated')}</th><th></th></tr></thead><tbody>${
-      d.providers.map((p) => `<tr><td>${esc(p.name)}${p.active ? `<span class="sub">${t('proxy.active')}</span>` : ''}</td><td><span class="tag">${esc(tEnum('kind', p.kind))}</span></td><td class="num">${p.count.toLocaleString()}</td>
-        <td class="num" title="${esc(p.updated_at)}">${relTime(p.updated_at)}</td>
-        <td class="num"><button class="btn sm" data-update="${esc(p.name)}" data-kind="${esc(p.kind)}">${t('act.update')}</button>
+      d.providers.map((p) => `<tr><td>${esc(p.name)}${p.active ? `<span class="sub">${t('proxy.active')}</span>` : ''}${p.error ? `<span class="sub err">${esc(p.error)}</span>` : `<span class="sub">${p.auto_update ? `${t('proxy.autoUpdate')} · ${fmtDur(p.update_interval)}` : t('proxy.manualUpdate')}${p.next_update_at ? ` · ${t('proxy.next')} ${relTime(p.next_update_at)}` : ''}</span>`}</td><td><span class="tag">${esc(tEnum('kind', p.kind))}</span></td><td class="num">${p.count.toLocaleString()}</td>
+		<td class="num" title="${esc(p.updated_at)}">${relTime(p.updated_at)}</td>
+		<td class="num"><button class="btn sm" data-update="${esc(p.name)}" data-id="${esc(p.id)}" data-kind="${esc(p.kind)}">${t('act.update')}</button>
+			${p.id ? `<button class="btn sm" data-sub-edit="${esc(p.id)}">${t('act.edit')}</button><button class="btn sm" data-sub-history="${esc(p.id)}">${t('proxy.history')}</button>` : ''}
           ${p.id && !p.active ? `<button class="btn sm" data-sub-activate="${esc(p.id)}">${t('proxy.activate')}</button>` : ''}
           ${p.id ? `<button class="btn sm danger" data-sub-remove="${esc(p.id)}" data-sub-name="${esc(p.name)}">${t('proxy.remove')}</button>` : ''}</td></tr>`).join('')}</tbody></table>`
     : `<p class="empty">${t('proxy.noProviders')}</p>`;
@@ -846,16 +876,41 @@ $('#mode').addEventListener('click', async (ev) => {
 
 $('#node-filter').addEventListener('input', () => renderProxies());
 
+async function waitProxyState(action) {
+  const wantRunning = action !== 'stop';
+	const deadline = Date.now() + 45000;
+  while (Date.now() < deadline) {
+    try {
+      const d = await api('/api/proxies');
+      S.proxies = d;
+      renderProxies(true);
+      if ((d.running !== false) === wantRunning) return d;
+    } catch (e) {
+      if (e instanceof AuthError || e instanceof NetError) throw e;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 700));
+  }
+  throw new Error(t('proxy.stateTimeout'));
+}
+
 document.addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-proxy-service]');
   if (!b) return;
   const action = b.dataset.proxyService;
   const msgKey = { start: 'proxy.serviceStart', stop: 'proxy.serviceStop', restart: 'proxy.serviceRestart' }[action];
   busy(b, null, async () => {
-    await api('/api/proxies/service', { action });
+		await api('/api/proxies/service', { action }, { timeout: 65000 });
     toast(t(msgKey));
-    // start/restart are detached and need a moment to publish their status.
-    await new Promise((resolve) => setTimeout(resolve, action === 'stop' ? 400 : 1200));
+    await waitProxyState(action);
+    statusTick();
+  }).catch(fail);
+});
+
+$('#btn-proxy-autostart').addEventListener('click', async (ev) => {
+  const enabled = S.proxies?.auto_start === false;
+  await busy(ev.currentTarget, null, async () => {
+    await api('/api/proxies/autostart', { enabled });
+    toast(t('proxy.autostartChanged', { state: enabled ? t('proxy.autostartOn') : t('proxy.autostartOff') }));
     await loadProxies(true);
     statusTick();
   }).catch(fail);
@@ -876,7 +931,7 @@ async function updateProviders(btn, body) {
 $('#btn-update').addEventListener('click', (ev) => updateProviders(ev.currentTarget, {}));
 $('#providers').addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-update]');
-  if (b) { updateProviders(b, { kind: b.dataset.kind, name: b.dataset.update }); return; }
+	if (b) { updateProviders(b, { kind: b.dataset.kind, name: b.dataset.update, id: b.dataset.id }); return; }
   const activate = ev.target.closest('[data-sub-activate]');
   if (activate) {
     busy(activate, null, async () => {
@@ -895,14 +950,51 @@ $('#providers').addEventListener('click', (ev) => {
       await loadProxies();
     });
   })().catch(fail);
+	const edit = ev.target.closest('[data-sub-edit]');
+	if (edit) editSubscription(edit).catch(fail);
+	const history = ev.target.closest('[data-sub-history]');
+	if (history) showSubscriptionHistory(history).catch(fail);
 });
+
+async function editSubscription(button) {
+	const result = await api('/api/proxies/subscriptions', { action: 'details', id: button.dataset.subEdit });
+	const p = result.data || {};
+	let name = p.name || '';
+	let url = p.url || '';
+	let autoUpdate = p.auto_update !== false;
+	let hours = Math.max(0.25, Number(p.update_interval || 86400) / 3600);
+	let via = p.update_via_proxy || 'auto';
+	const ok = await openModal({
+		title: t('proxy.editSub'), ok: t('act.save'), wide: true,
+		html: `<div class="form"><label class="field"><span class="lbl">${t('th.name')}</span><input id="sub-edit-name" value="${esc(name)}"></label><label class="field"><span class="lbl">URL</span><input id="sub-edit-url" type="url" value="${esc(url)}"></label><label class="field switch"><span class="lbl">${t('proxy.autoUpdate')}</span><input id="sub-edit-auto" type="checkbox" ${autoUpdate ? 'checked' : ''}><span class="sw"></span></label><label class="field"><span class="lbl">${t('proxy.intervalHours')}</span><input id="sub-edit-hours" type="number" min="0.25" step="0.25" value="${hours}"></label><label class="field"><span class="lbl">${t('proxy.updateRoute')}</span><select id="sub-edit-via"><option value="auto">AUTO</option><option value="direct">DIRECT</option><option value="proxy">PROXY</option></select></label></div>`,
+		onOpen: (body) => { body.querySelector('#sub-edit-via').value = via; },
+	});
+	if (!ok) return;
+	name = $('#sub-edit-name', modal).value.trim();
+	url = $('#sub-edit-url', modal).value.trim();
+	autoUpdate = $('#sub-edit-auto', modal).checked;
+	hours = Number($('#sub-edit-hours', modal).value);
+	via = $('#sub-edit-via', modal).value;
+	await busy(button, null, async () => {
+		await api('/api/proxies/subscriptions', { action: 'edit', id: button.dataset.subEdit, name, url, auto_update: autoUpdate, update_interval: `${hours}h`, update_via_proxy: via }, { timeout: 100000 });
+		toast(t('proxy.edited'));
+		await loadProxies(true);
+	});
+}
+
+async function showSubscriptionHistory(button) {
+	const result = await api('/api/proxies/subscriptions', { action: 'history', id: button.dataset.subHistory });
+	const rows = Array.isArray(result.data) ? result.data.slice().reverse() : [];
+	await openModal({ title: t('proxy.history'), cancel: t('act.close'), ok: '', wide: true,
+		html: rows.length ? `<div class="table-wrap"><table><thead><tr><th>${t('th.updated')}</th><th>${t('proxy.result')}</th><th class="num">${t('th.count')}</th></tr></thead><tbody>${rows.map((x) => `<tr><td>${esc(x.at || '—')}</td><td>${x.ok ? '<span class="tag ok">OK</span>' : `<span class="tag bad">${esc(x.code || 'FAILED')}</span>`}${x.diagnostics ? `<span class="sub">${esc(JSON.stringify(x.diagnostics))}</span>` : ''}</td><td class="num">${Number(x.node_count || 0)}</td></tr>`).join('')}</tbody></table></div>` : `<p class="empty">${t('proxy.noHistory')}</p>` });
+}
 
 $('#btn-sub-add').addEventListener('click', async (ev) => {
   const addButton = ev.currentTarget;
-  let value = '';
+	let value = '';
   const ok = await openModal({
     title: t('proxy.addSub'), ok: t('proxy.add'),
-    html: `<label class="field"><span class="lbl">URL</span><input type="url" id="sub-url" autocomplete="off" placeholder="https://…" required></label>`,
+		html: `<div class="form"><label class="field"><span class="lbl">URL</span><input type="url" id="sub-url" autocomplete="off" placeholder="https://…" required></label><label class="field"><span class="lbl">${t('th.name')} (${t('proxy.optional')})</span><input id="sub-name" autocomplete="off"></label><label class="field switch"><span class="lbl">${t('proxy.autoUpdate')}</span><input id="sub-auto" type="checkbox" checked><span class="sw"></span></label><label class="field"><span class="lbl">${t('proxy.intervalHours')}</span><input id="sub-hours" type="number" min="0.25" step="0.25" value="24"></label><label class="field"><span class="lbl">${t('proxy.updateRoute')}</span><select id="sub-via"><option value="auto">AUTO</option><option value="direct">DIRECT</option><option value="proxy">PROXY</option></select></label></div>`,
     onOpen: (body) => {
       const input = body.querySelector('#sub-url');
       input.addEventListener('input', () => { value = input.value.trim(); });
@@ -911,11 +1003,39 @@ $('#btn-sub-add').addEventListener('click', async (ev) => {
   });
   if (!ok || !value) return;
   await busy(addButton, null, async () => {
-    await api('/api/proxies/subscriptions', { action: 'add', url: value }, { timeout: 100000 });
+		await api('/api/proxies/subscriptions', { action: 'add', url: value, name: $('#sub-name', modal).value.trim(), auto_update: $('#sub-auto', modal).checked, update_interval: `${Number($('#sub-hours', modal).value)}h`, update_via_proxy: $('#sub-via', modal).value }, { timeout: 100000 });
     toast(t('proxy.added'));
     await loadProxies();
   }).catch(fail);
 });
+
+$('#btn-proxy-check').addEventListener('click', (ev) => busy(ev.currentTarget, null, async () => {
+	await api('/api/proxies/settings', { action: 'check' }, { timeout: 60000 });
+	toast(t('proxy.checkPassed'));
+}).catch(fail));
+
+$('#btn-proxy-reload').addEventListener('click', (ev) => busy(ev.currentTarget, null, async () => {
+	await api('/api/proxies/settings', { action: 'reload' }, { timeout: 60000 });
+	toast(t('proxy.reloaded'));
+	await loadProxies(true);
+}).catch(fail));
+
+const packageLines = (value) => String(value || '').split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
+async function editProxySettings() {
+	const settings = S.proxies?.settings;
+	if (!settings) { toast(S.proxies?.settings_error || t('proxy.settingsUnavailable'), true); return; }
+	const app = settings.app || {};
+	const ok = await openModal({
+		title: t('proxy.settings'), ok: t('act.save'), wide: true,
+		html: `<div class="form"><label class="field"><span class="lbl">${t('proxy.backend')}</span><select id="px-backend"><option value="tun">TUN</option><option value="ebpf">eBPF</option></select><span class="note">${t('proxy.backendHint')}</span></label><label class="field"><span class="lbl">${t('proxy.rootPolicy')}</span><select id="px-root"><option value="include">${t('proxy.rootInclude')}</option><option value="default">${t('proxy.rootDefault')}</option><option value="exclude">${t('proxy.rootExclude')}</option></select></label><label class="field switch"><span class="lbl">${t('proxy.appPolicy')}</span><input id="px-app-enabled" type="checkbox" ${app.enabled ? 'checked' : ''}><span class="sw"></span></label><label class="field"><span class="lbl">${t('proxy.appMode')}</span><select id="px-app-mode"><option value="blacklist">${t('proxy.blacklist')}</option><option value="whitelist">${t('proxy.whitelist')}</option></select></label><label class="field"><span class="lbl">${t('proxy.proxyApps')}</span><textarea id="px-proxy-apps" rows="5" placeholder="0:com.example.app">${esc((app.proxy_apps || []).join('\n'))}</textarea></label><label class="field"><span class="lbl">${t('proxy.bypassApps')}</span><textarea id="px-bypass-apps" rows="5" placeholder="0:com.example.app">${esc((app.bypass_apps || []).join('\n'))}</textarea><span class="note">${t('proxy.appHint')}</span></label></div>`,
+		onOpen: (body) => { body.querySelector('#px-backend').value = settings.backend; body.querySelector('#px-root').value = settings.root_policy; body.querySelector('#px-app-mode').value = app.mode || 'blacklist'; },
+	});
+	if (!ok) return;
+	await api('/api/proxies/settings', { action: 'save', backend: $('#px-backend', modal).value, root_policy: $('#px-root', modal).value, app: { enabled: $('#px-app-enabled', modal).checked, mode: $('#px-app-mode', modal).value, proxy_apps: packageLines($('#px-proxy-apps', modal).value), bypass_apps: packageLines($('#px-bypass-apps', modal).value) } }, { timeout: 70000 });
+	toast(t('proxy.settingsSaved'));
+	await loadProxies(true);
+}
+$('#btn-proxy-settings').addEventListener('click', () => editProxySettings().catch(fail));
 
 $('#btn-conns').addEventListener('click', async () => {
   let list = [];
@@ -924,9 +1044,9 @@ $('#btn-conns').addEventListener('click', async () => {
     const q = (body.querySelector('#conn-filter')?.value || '').toLowerCase();
     const rows = list.filter((c) => !q || `${c.host} ${c.source} ${c.rule} ${c.chain}`.toLowerCase().includes(q)).slice(0, 300);
     body.querySelector('#conn-table').innerHTML = rows.length
-      ? `<table><thead><tr><th>${t('th.target')}</th><th>${t('th.chain')}</th><th class="num">${t('th.traffic')}</th></tr></thead><tbody>${rows.map((c) =>
+      ? `<table><thead><tr><th>${t('th.target')}</th><th>${t('th.chain')}</th><th class="num">${t('th.traffic')}</th><th class="num">${t('th.action')}</th></tr></thead><tbody>${rows.map((c) =>
         `<tr><td>${esc(c.host)}<span class="sub">${esc(c.network)} · ${esc(c.source)} · ${esc(c.rule)}</span></td><td>${esc(c.chain)}</td>
-          <td class="num">↓ ${fmtBytes(c.download)}<span class="sub">↑ ${fmtBytes(c.upload)}</span></td></tr>`).join('')}</tbody></table>`
+          <td class="num">↓ ${fmtBytes(c.download)}<span class="sub">↑ ${fmtBytes(c.upload)}</span></td><td class="num">${c.id ? `<button class="btn sm" data-close-connection="${esc(c.id)}">${t('conns.closeOne')}</button>` : '—'}</td></tr>`).join('')}</tbody></table>`
       : `<p class="empty">${t('conns.none')}</p>`;
     $('#modal-title').textContent = t('conns.title', { n: list.length });
   };
@@ -938,6 +1058,15 @@ $('#btn-conns').addEventListener('click', async () => {
     html: `<label class="search" style="margin-bottom:12px"><svg class="ic"><use href="#i-search"/></svg><input id="conn-filter" type="search" placeholder="${esc(t('conns.filter'))}" autocomplete="off"></label><div class="table-wrap" id="conn-table"><p class="empty">${t('logs.loading')}</p></div>`,
     onOpen: (body) => {
       body.querySelector('#conn-filter').addEventListener('input', () => render(body));
+      body.querySelector('#conn-table').addEventListener('click', async (ev) => {
+        const button = ev.target.closest('[data-close-connection]');
+        if (!button) return;
+        await busy(button, null, async () => {
+          await api('/api/proxies/close-connections', { id: button.dataset.closeConnection });
+          toast(t('conns.oneClosed'));
+          await refresh(body);
+        }).catch(fail);
+      });
       refresh(body);
       timer = setInterval(() => refresh(body), 3000);
     },
@@ -981,7 +1110,8 @@ function renderWiFi(d) {
   }
   if (d.usb) {
     const u = d.usb;
-    html += `<article class="panel s12"><header class="ph"><span class="pi">USB</span><h2>USB TETHER</h2><span class="sub">${t('usb.summary')}</span><div class="pa"><span class="tag ${u.active ? 'ok' : u.connected ? 'warn' : ''}">${u.active ? 'ON' : u.connected ? 'LINK' : 'STANDBY'}</span></div></header><div class="pb"><div class="kv-grid"><div><span class="dim">${t('usb.autostart')}</span><b>${u.enabled ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('usb.connected')}</span><b>${t(u.connected ? 'state.connected' : 'state.disconnected')}</b></div><div><span class="dim">${t('turbo.interface')}</span><b>${esc(u.interface || '—')}</b></div><div><span class="dim">${t('usb.function')}</span><b>${esc(u.function || '—')}</b></div><div><span class="dim">${t('usb.nativeAddress')}</span><b>${esc(u.native_address || '—')}</b></div><div><span class="dim">${t('usb.managementAddress')}</span><b>${esc(u.management_address || '—')}</b></div><div><span class="dim">DHCP · NAT</span><b>${u.dhcp && u.nat ? 'ON' : '—'}</b></div></div><div class="actions"><button class="btn ${u.enabled ? '' : 'pri'}" data-usb="${u.enabled ? 0 : 1}">${u.enabled ? t('usb.disable') : t('usb.enable')}</button><span class="note">${t('usb.note')}</span></div></div></article>`;
+    const autoStart = u.auto_start ?? u.enabled;
+    html += `<article class="panel s12"><header class="ph"><span class="pi">USB</span><h2>USB TETHER</h2><span class="sub">${t('usb.summary')}</span><div class="pa"><span class="tag ${u.active ? 'ok' : u.connected ? 'warn' : ''}">${u.active ? 'ON' : u.connected ? 'LINK' : 'STANDBY'}</span></div></header><div class="pb"><div class="kv-grid"><div><span class="dim">${t('usb.autostart')}</span><b>${autoStart ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('usb.connected')}</span><b>${t(u.connected ? 'state.connected' : 'state.disconnected')}</b></div><div><span class="dim">${t('turbo.interface')}</span><b>${esc(u.interface || '—')}</b></div><div><span class="dim">${t('usb.function')}</span><b>${esc(u.function || '—')}</b></div><div><span class="dim">${t('usb.nativeAddress')}</span><b>${esc(u.native_address || '—')}</b></div><div><span class="dim">${t('usb.managementAddress')}</span><b>${esc(u.management_address || '—')}</b></div><div><span class="dim">DHCP · NAT</span><b>${u.dhcp && u.nat ? 'ON' : '—'}</b></div></div><div class="actions"><button class="btn ${u.active ? '' : 'pri'}" data-usb-runtime="${u.active ? 0 : 1}"${!u.active && !u.connected ? ' disabled' : ''}>${t(u.active ? 'usb.stopNow' : 'usb.startNow')}</button><button class="btn" data-usb-auto="${autoStart ? 0 : 1}">${t(autoStart ? 'usb.disableAuto' : 'usb.enableAuto')}</button><span class="note">${t('usb.note')}</span></div></div></article>`;
   }
   html += (d.aps || []).map((ap) => {
     const cur = Number(ap.max_clients) || 0;
@@ -1025,16 +1155,39 @@ $('#wifi').addEventListener('click', async (ev) => {
   }).catch(fail);
 });
 
+async function waitUSBState(active) {
+  const deadline = Date.now() + 35000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const state = await api('/api/wifi');
+    if (!!state.usb?.active === active) return state;
+  }
+  throw new Error(t('usb.stateTimeout'));
+}
+
 $('#wifi').addEventListener('click', async (ev) => {
-  const b = ev.target.closest('[data-usb]');
+  const b = ev.target.closest('[data-usb-runtime]');
   if (!b) return;
-  const enabled = b.dataset.usb === '1';
-  if (!enabled && !(await confirmBox(t('usb.confirmDisable'), { danger: true }))) return;
+  const active = b.dataset.usbRuntime === '1';
+  if (!active && !(await confirmBox(t('usb.confirmStop'), { danger: true }))) return;
   await busy(b, null, async () => {
-    await api('/api/usb', { enabled });
-    toast(enabled ? t('usb.enabled') : t('usb.disabled'));
+    await api('/api/usb', { active });
+    await waitUSBState(active);
+    toast(active ? t('usb.started') : t('usb.stopped'));
     wifiLoaded = false;
-    setTimeout(() => page === 'device' && loadDevice(true), 1800);
+    if (page === 'device') await loadDevice(true);
+  }).catch(fail);
+});
+
+$('#wifi').addEventListener('click', async (ev) => {
+  const b = ev.target.closest('[data-usb-auto]');
+  if (!b) return;
+  const autoStart = b.dataset.usbAuto === '1';
+  await busy(b, null, async () => {
+    await api('/api/usb', { auto_start: autoStart });
+    toast(autoStart ? t('usb.autoEnabled') : t('usb.autoDisabled'));
+    wifiLoaded = false;
+    if (page === 'device') await loadDevice(true);
   }).catch(fail);
 });
 
@@ -1492,9 +1645,16 @@ renderTmuxWins();
 
 if ('serviceWorker' in navigator && window.isSecureContext) {
   const hadController = !!navigator.serviceWorker.controller;
-  navigator.serviceWorker.register('/sw.js').catch(() => { /* fails while the local CA is not trusted */ });
-  // a new version took over: the running page still has the old code
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) toast(t('pwa.updated')); });
+  let refreshing = false;
+  navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
+    .then((registration) => registration.update())
+    .catch(() => { /* fails while the local CA is not trusted */ });
+  // Reload once when an upgrade takes over so HTML, JS and CSS always come from one release.
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || refreshing) return;
+    refreshing = true;
+    location.reload();
+  });
 }
 
 initI18n().finally(boot);

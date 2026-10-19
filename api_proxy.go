@@ -216,11 +216,28 @@ func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.platform == "xiaomi" {
-		if in.Mode != "rule" && in.Mode != "global" && in.Mode != "direct" {
-			writeErr(w, http.StatusBadRequest, apiErr("mode_invalid", "mode must be rule, global or direct"))
+		if in.Mode != "rule" && in.Mode != "ruleallowads" && in.Mode != "global" && in.Mode != "direct" {
+			writeErr(w, http.StatusBadRequest, apiErr("mode_invalid", "unsupported outbound mode"))
 			return
 		}
-		if _, err := s.netproxyCall(r.Context(), "mode", netproxyMode(in.Mode)); err != nil {
+		st, err := s.netproxyStatus(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		requested := netproxyMode(in.Mode)
+		available := false
+		for _, mode := range st.AvailableModes {
+			if strings.EqualFold(mode, requested) {
+				available = true
+				break
+			}
+		}
+		if !available {
+			writeErr(w, http.StatusBadRequest, apiErr("mode_unavailable", "outbound mode is not available in the current configuration"))
+			return
+		}
+		if _, err := s.netproxyCall(r.Context(), "mode", requested); err != nil {
 			writeErr(w, http.StatusBadGateway, err)
 			return
 		}
@@ -244,14 +261,32 @@ func (s *server) handleMode(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateProviders refreshes subscriptions; an empty name updates every proxy and rule provider
 func (s *server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Kind, Name string }
+	var in struct{ Kind, Name, ID string }
 	if err := readBody(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	if s.platform == "xiaomi" {
 		args := []string{"sub", "update-all"}
-		if in.Name != "" {
+		if in.ID != "" {
+			known := false
+			if subs, err := s.netproxySubscriptions(r.Context()); err == nil {
+				for _, sub := range subs {
+					if sub.ID == in.ID {
+						known = true
+						if in.Name == "" {
+							in.Name = sub.Name
+						}
+						break
+					}
+				}
+			}
+			if !known {
+				writeErr(w, http.StatusBadRequest, apiErr("subscription_unknown", "subscription does not exist"))
+				return
+			}
+			args = []string{"sub", "update", in.ID}
+		} else if in.Name != "" {
 			groups, err := s.netproxyCall(r.Context(), "catalog", "list")
 			if err != nil {
 				writeErr(w, http.StatusBadGateway, err)
@@ -270,7 +305,9 @@ func (s *server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if _, err := s.netproxyCall(r.Context(), args...); err != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 100*time.Second)
+		defer cancel()
+		if _, err := s.netproxyCallWithTimeout(ctx, 95*time.Second, "90s", args...); err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"results": []map[string]any{{"name": in.Name, "kind": in.Kind, "error": err.Error()}}, "failed": 1})
 			return
 		}
@@ -328,13 +365,32 @@ func (s *server) handleUpdateProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleCloseConns(w http.ResponseWriter, r *http.Request) {
-	if s.platform == "xiaomi" {
-		// NetProxy owns connection teardown; its stable public CLI currently exposes aggregate
-		// counters only. A service reload is intentionally not triggered by this UI action.
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	var in struct {
+		ID string `json:"id"`
+	}
+	if err := readBody(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.mihomo.closeConnections(r.Context()); err != nil {
+	client := s.mihomo
+	if s.platform == "xiaomi" {
+		var err error
+		client, err = s.netproxyClashClient()
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+	}
+	var err error
+	if in.ID == "" {
+		err = client.closeConnections(r.Context())
+	} else if len(in.ID) > 128 || strings.ContainsAny(in.ID, "\r\n\x00") {
+		writeErr(w, http.StatusBadRequest, apiErr("connection_id_invalid", "invalid connection ID"))
+		return
+	} else {
+		err = client.closeConnection(r.Context(), in.ID)
+	}
+	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -342,23 +398,24 @@ func (s *server) handleCloseConns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	client := s.mihomo
 	if s.platform == "xiaomi" {
-		st, err := s.netproxyStatus(r.Context())
+		var err error
+		client, err = s.netproxyClashClient()
 		if err != nil {
-			writeErr(w, http.StatusBadGateway, proxyDown(err))
+			writeErr(w, http.StatusBadGateway, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"connections": []any{}, "upload_total": st.UploadTotal, "download_total": st.DownloadTotal, "memory": st.MemoryBytes})
-		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	cs, err := s.mihomo.connections(ctx)
+	cs, err := client.connections(ctx)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, proxyDown(err))
 		return
 	}
 	type conn struct {
+		ID       string `json:"id"`
 		Host     string `json:"host"`
 		Source   string `json:"source"`
 		Network  string `json:"network"`
@@ -368,7 +425,7 @@ func (s *server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		Download int64  `json:"download"`
 		Start    int64  `json:"start"`
 	}
-	var out []conn
+	out := make([]conn, 0, len(cs.Connections))
 	for _, c := range cs.Connections {
 		host := c.Metadata.Host
 		if host == "" {
@@ -386,7 +443,7 @@ func (s *server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		if c.Payload != "" {
 			rule += "," + c.Payload
 		}
-		out = append(out, conn{host, c.Metadata.SourceIP, c.Metadata.Network, strings.Join(chain, " → "), rule, c.Upload, c.Download, c.Start.Unix()})
+		out = append(out, conn{c.ID, host, c.Metadata.SourceIP, c.Metadata.Network, strings.Join(chain, " → "), rule, c.Upload, c.Download, c.Start.Unix()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start > out[j].Start })
 	writeJSON(w, http.StatusOK, map[string]any{"connections": out})

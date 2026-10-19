@@ -24,11 +24,12 @@
 | 页面 | 内容 |
 | --- | --- |
 | 概览 | WAN 实时吞吐曲线、信号（RSRP/SINR/频段）及历史、出口节点和代理链、Tailscale 连通性探测、本月流量、电量/CPU/内存/温度、已连接设备 |
-| 代理 | mihomo 或内置 NetProxy 分组和节点、添加/启用/删除订阅、切换节点、测速、规则/全局/直连模式、代理状态和流量汇总 |
-| 设备 | Android 系统热点和 USB 共享、AP Turbo 状态、固定 `192.168.88.1` 管理地址、SSID/密码和 Wi-Fi 6/32 台热点增强、已连接设备、HTTPS 与安装指引、重启代理、重启设备、校正设备时间、控制台密码、主题和语言 |
+| 小区 | 实时注册和数据状态、基带上报的服务/候选小区、手动网络扫描、载波成员、自动/手动 PLMN 选网及断网安全回退 |
+| 代理 | mihomo 或内置 NetProxy 分组和节点、完整启停/重启及开机策略、订阅定时更新和历史、节点切换和批量测速、规则/去广告/全局/直连模式、TUN/eBPF 与应用/Root 策略、实时连接和流量汇总 |
+| 设备 | Android 系统热点和 USB 共享（当前运行与开机策略独立控制）、AP Turbo 状态、固定 `192.168.88.1` 管理地址、SSID/密码和 Wi-Fi 6/32 台热点增强、已连接设备、HTTPS 与安装指引、重启设备、校正设备时间、控制台密码、主题和语言 |
 | 日志 | mihomo、Box for Root、Glovebox、Android logcat；级别筛选、grep 高亮、跟随/暂停、自动换行 |
 
-键盘：`1`–`4` 切换页面，`/` 聚焦筛选框。
+键盘：`1`–`5` 切换页面，`/` 聚焦筛选框。
 
 <p>
 <img src="docs/screenshots/zh-CN/proxy.png" width="49%" alt="代理">
@@ -51,7 +52,8 @@ HyperOS Android 16。和硬件打交道的部分都封装在几个适配器里�
 - ZTE 可选：[Box for Root](https://github.com/taamarin/box_for_magisk) 运行 mihomo，external-controller
   监听 `127.0.0.1:9091`
 - 小米 14 Pro：Glovebox 内置 NetProxy 8.6.1 和 sing-box。首次启动会停止原来的独立 NetProxy 模块，
-  并把它移到 Magisk 有效模块目录之外留作回退备份。
+  并把它移到 Magisk 有效模块目录之外留作回退备份。内置转换器包含有记录的兼容补丁，用于订阅采用
+  证书指纹的 Hysteria2 节点与捆绑 sing-box 内核的 ChromeParrot 兼容。
 
 ## 安装
 
@@ -113,7 +115,7 @@ echo '{"tailscale_proxy":"Tailscale","tailscale_probe":"http://100.64.0.1/"}' \
 | `box_dir` | `/data/adb/box` | Box for Root 目录（日志、重启脚本） |
 | `netproxy_dir`, `turbo_dir` | `/data/adb/modules/glovebox/netproxy`、`/data/adb/modules/glovebox` | 内置 NetProxy 和集成 AP 控制器目录 |
 | `hotspot_ssid`, `hotspot_password`, `hotspot_hidden` | `nwrt`、`1234567890`、`false` | 在设备页管理并同步到 Android 系统的热点配置 |
-| `auto_start_hotspot`, `auto_start_usb_tether` | `true`、`true` | 开机启动系统热点和 USB 共享；DHCP/NAT 仍只由 Android NetworkStack 管理 |
+| `auto_start_hotspot`, `auto_start_usb_tether` | `true`、`true` | 开机恢复系统热点和 USB 共享；USB 当前运行和开机策略可独立控制，DHCP/NAT 始终只由 Android NetworkStack 管理 |
 | `tailscale_proxy`, `tailscale_probe` | | mihomo 出站名和经它访问的 tailnet 地址；两者都设置后才显示 Tailnet 卡片 |
 | `delay_url` | `https://www.gstatic.com/generate_204` | 测速使用的地址 |
 | `wan_prefixes`, `lan_dev` | `sipa_eth`, `rmnet`, `ccmni` / `br0` | 统计流量速率用的网卡 |

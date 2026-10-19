@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -59,6 +60,43 @@ func proxyController(c Config) (string, string, []byte, []byte) {
 		}
 	}
 	return base, secret, nil, nil
+}
+
+// netproxyClashController reads the loopback-only Clash API used for live connections.
+func netproxyClashController(c Config) (string, string, error) {
+	b, err := os.ReadFile(filepath.Join(c.NetProxyDir, "config/singbox/config.json"))
+	if err != nil {
+		return "", "", err
+	}
+	var document struct {
+		Experimental struct {
+			ClashAPI struct {
+				ExternalController string `json:"external_controller"`
+				Secret             string `json:"secret"`
+			} `json:"clash_api"`
+		} `json:"experimental"`
+	}
+	if err := json.Unmarshal(b, &document); err != nil {
+		return "", "", err
+	}
+	address := strings.TrimSpace(document.Experimental.ClashAPI.ExternalController)
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid NetProxy Clash API address: %w", err)
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil || !ip.IsLoopback() {
+		return "", "", errors.New("NetProxy Clash API must listen on loopback")
+	}
+	return "http://" + address, document.Experimental.ClashAPI.Secret, nil
+}
+
+func (s *server) netproxyClashClient() (*mihomoClient, error) {
+	base, secret, err := netproxyClashController(s.cfg.get())
+	if err != nil {
+		return nil, err
+	}
+	return newMihomo(base, secret, false, nil, nil), nil
 }
 
 func readKV(path string) map[string]string {
@@ -490,6 +528,7 @@ func (s *server) xiaomiUSBStatus(ctx context.Context) map[string]any {
 	}
 	return map[string]any{
 		"enabled":            c.AutoStartUSBTether,
+		"auto_start":         c.AutoStartUSBTether,
 		"active":             iface != "",
 		"interface":          iface,
 		"connected":          connected,

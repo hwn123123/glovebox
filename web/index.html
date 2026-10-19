@@ -253,6 +253,7 @@
       <div class="toolbar panel">
         <div class="seg" id="mode" role="group" aria-label="mode">
           <button data-mode="rule"><b>RULE</b><small data-i18n="mode.rule">Rule</small></button>
+          <button data-mode="ruleallowads"><b>RULE+</b><small data-i18n="mode.ruleallowads">Rule + ads</small></button>
           <button data-mode="global"><b>GLOBAL</b><small data-i18n="mode.global">Global</small></button>
           <button data-mode="direct"><b>DIRECT</b><small data-i18n="mode.direct">Direct</small></button>
         </div>
@@ -262,11 +263,23 @@
           <button class="btn sm" data-proxy-service="start"><span data-i18n="proxy.start">Start</span></button>
           <button class="btn sm" data-proxy-service="stop"><span data-i18n="proxy.stop">Stop</span></button>
           <button class="btn sm" data-proxy-service="restart"><svg class="ic"><use href="#i-refresh"/></svg><span data-i18n="proxy.restart">Restart</span></button>
+          <button class="btn sm" id="btn-proxy-autostart"><span data-i18n="proxy.autostart">Boot: —</span></button>
           <button class="btn" id="btn-conns"><span data-i18n="proxy.conns">Conns</span> <b class="badge" data-k="px.conns">—</b></button>
           <button class="btn pri" id="btn-update"><svg class="ic"><use href="#i-refresh"/></svg><span data-i18n="proxy.updateAll">Update subs</span></button>
         </div>
       </div>
       <p class="err panel pad" id="proxy-err" hidden></p>
+      <article class="panel proxy-control">
+        <header class="ph"><span class="pi">◎</span><h2>SERVICE</h2><span class="sub" data-i18n="proxy.serviceControl">runtime &amp; transparent proxy</span><div class="pa"><button class="btn sm" id="btn-proxy-check" data-i18n="proxy.check">Check config</button><button class="btn sm" id="btn-proxy-reload" data-i18n="proxy.reload">Reload</button><button class="btn sm" id="btn-proxy-settings" data-i18n="proxy.settings">Settings</button></div></header>
+        <div class="pb"><div class="kv-grid">
+          <div><span class="dim" data-i18n="proxy.runtimeState">Runtime</span><b id="proxy-runtime">&mdash;</b></div>
+          <div><span class="dim" data-i18n="proxy.backend">Backend</span><b id="proxy-backend">&mdash;</b></div>
+          <div><span class="dim" data-i18n="proxy.worker">Worker</span><b id="proxy-worker">&mdash;</b></div>
+          <div><span class="dim" data-i18n="proxy.uptime">Uptime</span><b id="proxy-uptime">&mdash;</b></div>
+          <div><span class="dim">PID</span><b id="proxy-pid">&mdash;</b></div>
+          <div><span class="dim" data-i18n="proxy.bootPolicy">Boot policy</span><b id="proxy-boot-policy">&mdash;</b></div>
+        </div></div>
+      </article>
       <div id="groups" class="groups"></div>
       <article class="panel">
         <header class="ph"><span class="pi">◇</span><h2>PROVIDERS</h2><span class="sub" data-i18n="p.providers">subscriptions &amp; rule sets</span><div class="pa"><button class="btn sm pri" id="btn-sub-add" data-i18n="proxy.addSub">Add subscription</button></div></header>

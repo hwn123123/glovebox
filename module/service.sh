@@ -34,7 +34,7 @@ until [ "$(getprop sys.boot_completed)" = 1 ]; do sleep 2; done
 while :; do
   read -r uptime_s _ < /proc/uptime
   uptime_s=${uptime_s%%.*}
-  [ "${uptime_s:-0}" -ge 60 ] && break
+  [ "${uptime_s:-0}" -ge 35 ] && break
   sleep 2
 done
 until service check wifi 2>/dev/null | grep -q 'found'; do sleep 2; done

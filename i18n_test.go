@@ -114,6 +114,19 @@ func TestNoUnusedKeys(t *testing.T) {
 	}
 }
 
+// addEventListener returns undefined. Accidentally appending .catch() to the registration call
+// aborts the entire startup script before boot() can run and leaves the console at its splash.
+func TestEventListenerReturnIsNotPromiseChained(t *testing.T) {
+	js, err := fs.ReadFile(webFS, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc := regexp.MustCompile(`(?m)^\}\)\.catch\([^)]*\);$`).FindIndex(js); loc != nil {
+		line := 1 + strings.Count(string(js[:loc[0]]), "\n")
+		t.Fatalf("web/app.js:%d: addEventListener returns undefined; catch inside the handler instead", line)
+	}
+}
+
 func goSources(t *testing.T) []string {
 	t.Helper()
 	files, err := filepath.Glob("*.go")

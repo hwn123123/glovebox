@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -263,26 +264,53 @@ func (s *server) handleSetUSB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Enabled bool `json:"enabled"`
+		Enabled   *bool `json:"enabled"`
+		Active    *bool `json:"active"`
+		AutoStart *bool `json:"auto_start"`
 	}
 	if err := readBody(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.cfg.update(func(c *Config) { c.AutoStartUSBTether = in.Enabled }); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+	// enabled is kept for older clients and changes both runtime and boot policy.
+	if in.Enabled != nil {
+		if in.Active == nil {
+			in.Active = in.Enabled
+		}
+		if in.AutoStart == nil {
+			in.AutoStart = in.Enabled
+		}
+	}
+	if in.Active == nil && in.AutoStart == nil {
+		writeErr(w, http.StatusBadRequest, apiErr("usb_action_required", "active or auto_start is required"))
 		return
 	}
-	if !s.demo {
+	if in.AutoStart != nil {
+		previous := s.cfg.get().AutoStartUSBTether
+		if err := s.cfg.update(func(c *Config) { c.AutoStartUSBTether = *in.AutoStart }); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !s.demo {
+			c := s.cfg.get()
+			policy := filepath.Join(c.TurboDir, "state/auto_usb")
+			if err := os.WriteFile(policy, []byte(boolFlag(*in.AutoStart)+"\n"), 0o600); err != nil {
+				_ = s.cfg.update(func(c *Config) { c.AutoStartUSBTether = previous })
+				writeErr(w, http.StatusInternalServerError, err)
+				return
+			}
+		}
+	}
+	if !s.demo && in.Active != nil {
 		c := s.cfg.get()
 		if err := startDetached("/system/bin/sh", filepath.Join(c.TurboDir, "scripts/wifi_turbo.sh"),
-			"usb", boolFlag(in.Enabled)); err != nil {
+			"usb-runtime", boolFlag(*in.Active)); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
 	}
-	log.Printf("Android USB tethering -> %v", in.Enabled)
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	log.Printf("Android USB tethering active=%v auto-start=%v", in.Active, in.AutoStart)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "active": in.Active, "auto_start": in.AutoStart})
 }
 
 func (s *server) handleSetTurbo(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +349,9 @@ func (s *server) handleBoxRestart(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 			return
 		}
-		if err := startDetached(netproxyExecutable(c), "service", "restart"); err != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		if _, err := s.startNetproxyAction(ctx, "restart"); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}

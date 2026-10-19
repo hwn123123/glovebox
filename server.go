@@ -46,6 +46,9 @@ type server struct {
 	cellErr    error
 	cellScan   []cellularCell
 	cellScanAt time.Time
+	// cellControlMu serializes modem selection requests and their safety rollback.
+	cellControlMu   sync.Mutex
+	cellSelectionID uint64
 }
 
 func newServer(cs *configStore, logDir string) *server {
@@ -174,6 +177,8 @@ func (s *server) routes() http.Handler {
 	authed("POST /api/proxies/update", s.handleUpdateProviders)
 	authed("POST /api/proxies/close-connections", s.handleCloseConns)
 	authed("POST /api/proxies/service", s.handleNetProxyService)
+	authed("POST /api/proxies/autostart", s.handleNetProxyAutostart)
+	authed("POST /api/proxies/settings", s.handleNetProxySettings)
 	authed("GET /api/connections", s.handleConnections)
 	authed("POST /api/tailscale/check", s.handleTSCheck)
 	authed("GET /api/clients", s.handleClients)
