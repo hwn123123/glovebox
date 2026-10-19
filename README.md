@@ -70,7 +70,9 @@ Requirements on the device:
 
 3. Join the hotspot and open **http://192.168.88.1:80**. On Xiaomi 14 Pro, the integrated AP
    controller starts `nwrt` / `1234567890`, keeps the fixed address on the hotspot interface and
-   enables Android USB tethering. Glovebox is the only management WebUI.
+   persists USB tether start/stop across reboots. The Magisk/KernelSU module action menu can also
+   enable, stop, restart, or inspect Android USB tethering with the volume keys. Glovebox is the
+   only management WebUI.
 
 For a friendly name, resolve `glovebox.lan` to `192.168.88.1`, e.g. with mihomo:
 

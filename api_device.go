@@ -258,20 +258,14 @@ func (s *server) handleSetWiFi(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (s *server) handleSetUSB(w http.ResponseWriter, r *http.Request) {
-	if s.platform != "xiaomi" {
-		writeErr(w, http.StatusNotImplemented, apiErr("usb_tether_unavailable", "USB tethering is only available on Xiaomi integration"))
-		return
-	}
-	var in struct {
-		Enabled   *bool `json:"enabled"`
-		Active    *bool `json:"active"`
-		AutoStart *bool `json:"auto_start"`
-	}
-	if err := readBody(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
+type usbRequest struct {
+	Enabled   *bool  `json:"enabled"`
+	Active    *bool  `json:"active"`
+	AutoStart *bool  `json:"auto_start"`
+	Action    string `json:"action"`
+}
+
+func normalizeUSBRequest(in *usbRequest) (bool, error) {
 	// enabled is kept for older clients and changes both runtime and boot policy.
 	if in.Enabled != nil {
 		if in.Active == nil {
@@ -280,6 +274,45 @@ func (s *server) handleSetUSB(w http.ResponseWriter, r *http.Request) {
 		if in.AutoStart == nil {
 			in.AutoStart = in.Enabled
 		}
+	}
+	restart := false
+	switch in.Action {
+	case "":
+	case "start":
+		v := true
+		in.Active, in.AutoStart = &v, &v
+	case "stop":
+		v := false
+		in.Active, in.AutoStart = &v, &v
+	case "restart":
+		v := true
+		in.Active, in.AutoStart, restart = &v, &v, true
+	default:
+		return false, apiErr("usb_action_invalid", "USB action must be start, stop or restart")
+	}
+	// Runtime start/stop is a user preference, not a temporary fault-recovery
+	// command. Persist it unless an older client explicitly sent auto_start.
+	if in.Active != nil && in.AutoStart == nil {
+		v := *in.Active
+		in.AutoStart = &v
+	}
+	return restart, nil
+}
+
+func (s *server) handleSetUSB(w http.ResponseWriter, r *http.Request) {
+	if s.platform != "xiaomi" {
+		writeErr(w, http.StatusNotImplemented, apiErr("usb_tether_unavailable", "USB tethering is only available on Xiaomi integration"))
+		return
+	}
+	var in usbRequest
+	if err := readBody(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	restart, err := normalizeUSBRequest(&in)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	if in.Active == nil && in.AutoStart == nil {
 		writeErr(w, http.StatusBadRequest, apiErr("usb_action_required", "active or auto_start is required"))
@@ -303,8 +336,14 @@ func (s *server) handleSetUSB(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.demo && in.Active != nil {
 		c := s.cfg.get()
-		if err := startDetached("/system/bin/sh", filepath.Join(c.TurboDir, "scripts/wifi_turbo.sh"),
-			"usb-runtime", boolFlag(*in.Active)); err != nil {
+		action := "usb-runtime"
+		args := []string{boolFlag(*in.Active)}
+		if restart {
+			action = "usb-restart-runtime"
+			args = nil
+		}
+		cmdArgs := append([]string{filepath.Join(c.TurboDir, "scripts/wifi_turbo.sh"), action}, args...)
+		if err := startDetached("/system/bin/sh", cmdArgs...); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}

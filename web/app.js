@@ -1111,7 +1111,7 @@ function renderWiFi(d) {
   if (d.usb) {
     const u = d.usb;
     const autoStart = u.auto_start ?? u.enabled;
-    html += `<article class="panel s12"><header class="ph"><span class="pi">USB</span><h2>USB TETHER</h2><span class="sub">${t('usb.summary')}</span><div class="pa"><span class="tag ${u.active ? 'ok' : u.connected ? 'warn' : ''}">${u.active ? 'ON' : u.connected ? 'LINK' : 'STANDBY'}</span></div></header><div class="pb"><div class="kv-grid"><div><span class="dim">${t('usb.autostart')}</span><b>${autoStart ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('usb.connected')}</span><b>${t(u.connected ? 'state.connected' : 'state.disconnected')}</b></div><div><span class="dim">${t('turbo.interface')}</span><b>${esc(u.interface || '—')}</b></div><div><span class="dim">${t('usb.function')}</span><b>${esc(u.function || '—')}</b></div><div><span class="dim">${t('usb.nativeAddress')}</span><b>${esc(u.native_address || '—')}</b></div><div><span class="dim">${t('usb.managementAddress')}</span><b>${esc(u.management_address || '—')}</b></div><div><span class="dim">DHCP · NAT</span><b>${u.dhcp && u.nat ? 'ON' : '—'}</b></div></div><div class="actions"><button class="btn ${u.active ? '' : 'pri'}" data-usb-runtime="${u.active ? 0 : 1}"${!u.active && !u.connected ? ' disabled' : ''}>${t(u.active ? 'usb.stopNow' : 'usb.startNow')}</button><button class="btn" data-usb-auto="${autoStart ? 0 : 1}">${t(autoStart ? 'usb.disableAuto' : 'usb.enableAuto')}</button><span class="note">${t('usb.note')}</span></div></div></article>`;
+    html += `<article class="panel s12"><header class="ph"><span class="pi">USB</span><h2>USB TETHER</h2><span class="sub">${t('usb.summary')}</span><div class="pa"><span class="tag ${u.active ? 'ok' : u.connected ? 'warn' : ''}">${u.active ? 'ON' : u.connected ? 'LINK' : 'STANDBY'}</span></div></header><div class="pb"><div class="kv-grid"><div><span class="dim">${t('usb.autostart')}</span><b>${autoStart ? 'ON' : 'OFF'}</b></div><div><span class="dim">${t('usb.connected')}</span><b>${t(u.connected ? 'state.connected' : 'state.disconnected')}</b></div><div><span class="dim">${t('turbo.interface')}</span><b>${esc(u.interface || '—')}</b></div><div><span class="dim">${t('usb.function')}</span><b>${esc(u.function || '—')}</b></div><div><span class="dim">${t('usb.nativeAddress')}</span><b>${esc(u.native_address || '—')}</b></div><div><span class="dim">${t('usb.managementAddress')}</span><b>${esc(u.management_address || '—')}</b></div><div><span class="dim">DHCP · NAT</span><b>${u.dhcp && u.nat ? 'ON' : '—'}</b></div></div><div class="actions"><button class="btn ${u.active ? '' : 'pri'}" data-usb-action="${u.active ? 'stop' : 'start'}"${!u.active && !u.connected ? ' disabled' : ''}>${t(u.active ? 'usb.stopNow' : 'usb.startNow')}</button><button class="btn" data-usb-action="restart"${!u.connected ? ' disabled' : ''}>${t('usb.restart')}</button><span class="note">${t('usb.note')}</span></div></div></article>`;
   }
   html += (d.aps || []).map((ap) => {
     const cur = Number(ap.max_clients) || 0;
@@ -1166,26 +1166,17 @@ async function waitUSBState(active) {
 }
 
 $('#wifi').addEventListener('click', async (ev) => {
-  const b = ev.target.closest('[data-usb-runtime]');
+  const b = ev.target.closest('[data-usb-action]');
   if (!b) return;
-  const active = b.dataset.usbRuntime === '1';
-  if (!active && !(await confirmBox(t('usb.confirmStop'), { danger: true }))) return;
+  const action = b.dataset.usbAction;
+  const active = action !== 'stop';
+  if (action === 'stop' && !(await confirmBox(t('usb.confirmStop'), { danger: true }))) return;
+  if (action === 'restart' && !(await confirmBox(t('usb.confirmRestart')))) return;
   await busy(b, null, async () => {
-    await api('/api/usb', { active });
-    await waitUSBState(active);
-    toast(active ? t('usb.started') : t('usb.stopped'));
-    wifiLoaded = false;
-    if (page === 'device') await loadDevice(true);
-  }).catch(fail);
-});
-
-$('#wifi').addEventListener('click', async (ev) => {
-  const b = ev.target.closest('[data-usb-auto]');
-  if (!b) return;
-  const autoStart = b.dataset.usbAuto === '1';
-  await busy(b, null, async () => {
-    await api('/api/usb', { auto_start: autoStart });
-    toast(autoStart ? t('usb.autoEnabled') : t('usb.autoDisabled'));
+    await api('/api/usb', { action });
+    if (action === 'restart') await new Promise((resolve) => setTimeout(resolve, 4000));
+    else await waitUSBState(active);
+    toast(action === 'restart' ? t('usb.restarted') : active ? t('usb.started') : t('usb.stopped'));
     wifiLoaded = false;
     if (page === 'device') await loadDevice(true);
   }).catch(fail);

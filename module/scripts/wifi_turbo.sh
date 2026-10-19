@@ -27,6 +27,7 @@ LOG_FILE="$STATE_DIR/daemon.log"
 RUNTIME_CACHE="$STATE_DIR/runtime.status"
 USB_FUNCTION_FILE="$STATE_DIR/usb_functions"
 AUTO_USB_FILE="$STATE_DIR/auto_usb"
+GLOVEBOX_CONFIG="/data/adb/glovebox/config.json"
 
 [ -x "$BUSYBOX" ] || BUSYBOX="busybox"
 mkdir -p "$STATE_DIR"
@@ -53,6 +54,26 @@ set_auto_usb() {
     else
         echo 0 > "$AUTO_USB_FILE"
     fi
+}
+
+sync_usb_policy_config() {
+    enabled="$1"
+    set_auto_usb "$enabled"
+    [ -x "$MODDIR/bin/glovebox" ] || return 0
+    if [ "$enabled" = "1" ]; then
+        value=true
+    else
+        value=false
+    fi
+    printf '{"auto_start_usb_tether":%s}\n' "$value" \
+        | "$MODDIR/bin/glovebox" -config "$GLOVEBOX_CONFIG" config import \
+            >> "$LOG_FILE" 2>&1
+}
+
+reload_glovebox_config() {
+    for pid in $(pidof glovebox 2>/dev/null); do
+        [ "$pid" = "$$" ] || kill "$pid" 2>/dev/null || true
+    done
 }
 
 get_airplane_mode() {
@@ -479,6 +500,10 @@ daemon_loop() {
     last_airplane=$(get_airplane_mode)
     recovery_retry_at=0
     usb_retry_at=0
+    last_usb_iface=$(get_usb_iface)
+    last_usb_link=0
+    usb_link_connected && last_usb_link=1
+    usb_stop_seen_at=0
     if [ "$last_airplane" = "1" ] && [ "$(get_auto_hotspot)" = "1" ]; then
         echo 1 > "$AIRPLANE_PENDING_FILE"
     fi
@@ -553,18 +578,47 @@ daemon_loop() {
                 fi
             fi
         fi
-        # USB can be unplugged and recreated independently of the hotspot.
-        # Restore only its management alias/route; never restart Wi-Fi here.
-        maintain_usb_web_endpoint >/dev/null 2>&1 || true
-        # HyperOS may leave the USB gadget at adb after a cable reconnect or
-        # after NetworkStack rejected the first tether request.  Retry only
-        # the USB path when the policy is enabled and Android reports a link.
-        if [ "$(get_auto_usb)" = "1" ] && [ -z "$(get_usb_iface)" ] \
-            && usb_link_connected; then
+        # USB runtime changes are independent of Wi-Fi. An active -> inactive
+        # transition while the physical cable remains connected is a deliberate
+        # stop in Android Settings and becomes the persisted boot policy. A real
+        # unplug keeps the policy and may recover tethering on the next connect.
+        usb_iface=$(get_usb_iface)
+        usb_link=0
+        usb_link_connected && usb_link=1
+        [ -z "$usb_iface" ] || maintain_usb_web_endpoint >/dev/null 2>&1 || true
+        now=$(date +%s)
+        if [ -n "$last_usb_iface" ] && [ -z "$usb_iface" ]; then
+            usb_stop_seen_at=$now
+            log_msg "USB tether stopped; checking whether the physical cable remains connected"
+        fi
+        if [ "$usb_stop_seen_at" -gt 0 ]; then
+            if [ "$usb_link" = "0" ]; then
+                usb_stop_seen_at=0
+                log_msg "USB cable disconnected; preserving auto-start policy"
+            elif [ -z "$usb_iface" ] && [ $((now - usb_stop_seen_at)) -ge 8 ]; then
+                usb_stop_seen_at=0
+                if [ "$(get_auto_usb)" = "1" ]; then
+                    log_msg "USB tether was manually stopped; disabling persisted auto-start"
+                    sync_usb_policy_config 0
+                    reload_glovebox_config
+                fi
+            fi
+        fi
+        if [ -n "$usb_iface" ] && [ -z "$last_usb_iface" ] \
+                && [ "$(get_auto_usb)" != "1" ]; then
+            log_msg "USB tether was manually enabled; enabling persisted auto-start"
+            sync_usb_policy_config 1
+            reload_glovebox_config
+        fi
+        # Recover only on a physical disconnected -> connected edge. Do not
+        # periodically override a user's explicit stop while the cable is in.
+        if [ "$(get_auto_usb)" = "1" ] && [ -z "$usb_iface" ] \
+                && [ "$usb_link" = "1" ] && [ "$last_usb_link" = "0" ] \
+                && [ "$usb_stop_seen_at" = "0" ]; then
             now=$(date +%s)
             if [ $((now - usb_retry_at)) -ge 20 ]; then
                 usb_retry_at=$now
-                log_msg "USB link detected without tether interface; recovering USB tether"
+                log_msg "USB cable reconnected; recovering persisted USB tether"
                 capture_usb_function
                 run_softap_helper start-usb "" >> "$LOG_FILE" 2>&1 || true
                 if ! setup_usb_web_endpoint 6; then
@@ -573,6 +627,8 @@ daemon_loop() {
                 fi
             fi
         fi
+        last_usb_iface="$usb_iface"
+        last_usb_link="$usb_link"
         sleep 4
     done
 }
@@ -635,8 +691,19 @@ set_hotspot() {
 }
 
 set_usb_tether() {
-    set_auto_usb "$1"
+    sync_usb_policy_config "$1"
     set_usb_runtime "$1"
+}
+
+restart_usb_tether() {
+    set_usb_runtime 0
+    sleep 2
+    set_usb_runtime 1
+}
+
+restart_usb_managed() {
+    sync_usb_policy_config 1
+    restart_usb_tether
 }
 
 set_usb_runtime() {
@@ -798,8 +865,10 @@ case "$1" in
     wifi) set_hotspot "$2" "$3" "$4" "$5" "$6" ;;
     usb) set_usb_tether "$2" ;;
     usb-runtime) set_usb_runtime "$2" ;;
+    usb-restart) restart_usb_managed ;;
+    usb-restart-runtime) restart_usb_tether ;;
     boot) boot_router "$2" "$3" "$4" "$5" "$6" ;;
     daemon) daemon_loop ;;
     cleanup) cleanup_all ;;
-    *) echo "Usage: $0 {on|off|status|webui|wifi|usb|usb-runtime|boot|daemon|cleanup}"; exit 1 ;;
+    *) echo "Usage: $0 {on|off|status|webui|wifi|usb|usb-runtime|usb-restart|usb-restart-runtime|boot|daemon|cleanup}"; exit 1 ;;
 esac

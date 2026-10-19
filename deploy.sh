@@ -26,7 +26,7 @@ MOD=/data/adb/modules/glovebox
 DATA=/data/adb/glovebox
 mkdir -p \$MOD \$DATA
 chmod 700 \$DATA
-cp -f $tmp/module.prop $tmp/service.sh $tmp/uninstall.sh $tmp/customize.sh \$MOD/
+cp -f $tmp/module.prop $tmp/service.sh $tmp/action.sh $tmp/uninstall.sh $tmp/customize.sh \$MOD/
 # Copy the integrated Xiaomi AP controller and its runtime resources. The config/state
 # directory is deliberately kept outside the module so upgrades cannot erase it.
 mkdir -p \$MOD/bin \$MOD/scripts \$MOD/state
@@ -76,7 +76,7 @@ if [ -f $tmp/system/product/overlay/GloveboxEthernetOverlay/GloveboxEthernetOver
 fi
 # copy then rename so a running binary is never overwritten in place
 cp -f $tmp/bin/glovebox \$MOD/bin/glovebox.new
-chmod 755 \$MOD/bin/glovebox.new \$MOD/service.sh
+chmod 755 \$MOD/bin/glovebox.new \$MOD/service.sh \$MOD/action.sh
 mv -f \$MOD/bin/glovebox.new \$MOD/bin/glovebox
 chown -R 0:0 \$MOD
 # Reload the lifecycle guard after replacing its shell script.  An existing

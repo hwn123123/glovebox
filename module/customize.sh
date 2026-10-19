@@ -3,6 +3,7 @@ SKIPUNZIP=0
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/bin/glovebox" 0 0 0755
 set_perm "$MODPATH/service.sh" 0 0 0755
+[ -f "$MODPATH/action.sh" ] && set_perm "$MODPATH/action.sh" 0 0 0755
 [ -f "$MODPATH/post-fs-data.sh" ] && set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
 [ -f "$MODPATH/scripts/wifi_turbo.sh" ] && set_perm "$MODPATH/scripts/wifi_turbo.sh" 0 0 0755
 [ -f "$MODPATH/scripts/netproxy.sh" ] && set_perm "$MODPATH/scripts/netproxy.sh" 0 0 0755
