@@ -145,7 +145,9 @@ func TestNoCJKInSource(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch p {
-			case ".git", "dist", "web/i18n", "web/fonts":
+			case ".git", "dist", "web/i18n", "web/fonts", "web/netproxy":
+				// web/netproxy contains the upstream localized NetProxy terminal
+				// assets. They are intentionally Chinese and self-contained.
 				return fs.SkipDir
 			}
 			return nil

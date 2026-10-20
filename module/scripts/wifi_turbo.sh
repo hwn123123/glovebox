@@ -247,26 +247,44 @@ restore_settings() {
 }
 
 derive_router_bssid() {
+    base=$(cat /sys/class/net/wlan0/address 2>/dev/null)
     if [ -s "$ROUTER_BSSID_FILE" ]; then
-        cat "$ROUTER_BSSID_FILE"
-        return
+        saved=$(cat "$ROUTER_BSSID_FILE")
+        case "$saved" in
+            ??\:??\:??\:??\:??\:??)
+                # Reusing the station MAC for SoftAP makes Qualcomm reject the
+                # interface with "failed to set explicitly requested MAC".
+                if [ "$saved" != "$base" ]; then
+                    printf '%s\n' "$saved"
+                    return
+                fi
+                log_msg "discarding SoftAP BSSID that duplicates wlan0: $saved"
+                ;;
+        esac
     fi
 
-    base=$(cat /sys/class/net/wlan0/address 2>/dev/null)
     ap_iface=$(get_ap_iface)
     ap_mac=""
     [ -n "$ap_iface" ] && ap_mac=$(cat "/sys/class/net/$ap_iface/address" 2>/dev/null)
 
-    case "$base" in
-        ??\:??\:??\:??\:??\:??) prefix=$(echo "$base" | cut -d: -f1-3) ;;
-        *) prefix="b4:05:a1" ;;
-    esac
     case "$ap_mac" in
-        ??\:??\:??\:??\:??\:??) suffix=$(echo "$ap_mac" | cut -d: -f4-6) ;;
-        *) suffix=$(echo "$base" | cut -d: -f4-6) ;;
+        ??\:??\:??\:??\:??\:??)
+            bssid="$ap_mac"
+            ;;
+        *)
+            case "$base" in
+                ??\:??\:??\:??\:??\:??)
+                    first=${base%%:*}
+                    local_first=$(printf '%02x' $(( (0x$first | 2) & 254 )))
+                    bssid="$local_first:${base#*:}"
+                    ;;
+                *)
+                    bssid="b6:05:a1:00:00:01"
+                    ;;
+            esac
+            ;;
     esac
 
-    bssid="$prefix:$suffix"
     printf '%s\n' "$bssid" > "$ROUTER_BSSID_FILE"
     printf '%s\n' "$bssid"
 }
@@ -498,7 +516,7 @@ daemon_loop() {
     trap '[ "$(cat "$DAEMON_PID_FILE" 2>/dev/null)" = "$$" ] && rm -f "$DAEMON_PID_FILE"; exit 0' TERM INT EXIT
     mismatch_count=0
     last_airplane=$(get_airplane_mode)
-    recovery_retry_at=0
+    recovery_retry_at=$(date +%s)
     usb_retry_at=0
     last_usb_iface=$(get_usb_iface)
     last_usb_link=0
@@ -563,20 +581,27 @@ daemon_loop() {
         else
             stop_webui
         fi
-        if [ "$airplane" = "0" ] && [ -f "$AIRPLANE_PENDING_FILE" ]; then
-            if [ "$(get_auto_hotspot)" != "1" ]; then
-                rm -f "$AIRPLANE_PENDING_FILE"
-            elif [ -n "$iface" ]; then
-                rm -f "$AIRPLANE_PENDING_FILE"
-                log_msg "hotspot recovered after airplane mode on $iface"
+        # Keep the saved user policy authoritative. If Android rejects the
+        # first boot request or later drops SoftAP, retry at a bounded rate.
+        # A deliberate stop writes auto_hotspot=0 and is never overridden.
+        if [ "$airplane" = "0" ] && [ "$(get_auto_hotspot)" = "1" ]; then
+            if [ -n "$iface" ]; then
+                if [ -f "$AIRPLANE_PENDING_FILE" ]; then
+                    rm -f "$AIRPLANE_PENDING_FILE"
+                    log_msg "hotspot recovered after airplane mode on $iface"
+                fi
             else
                 now=$(date +%s)
-                if [ $((now - recovery_retry_at)) -ge 8 ]; then
+                retry_after=20
+                [ -f "$AIRPLANE_PENDING_FILE" ] && retry_after=8
+                if [ $((now - recovery_retry_at)) -ge "$retry_after" ]; then
                     recovery_retry_at=$now
-                    log_msg "requesting Android hotspot recovery after airplane mode"
+                    log_msg "requesting Android hotspot recovery (saved auto-start policy)"
                     run_softap_helper start-wifi "" >> "$LOG_FILE" 2>&1 || true
                 fi
             fi
+        elif [ "$(get_auto_hotspot)" != "1" ]; then
+            rm -f "$AIRPLANE_PENDING_FILE"
         fi
         # USB runtime changes are independent of Wi-Fi. An active -> inactive
         # transition while the physical cable remains connected is a deliberate

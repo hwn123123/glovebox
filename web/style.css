@@ -362,6 +362,9 @@ td .sub { display: block; color: var(--fg-2); font-size: .76rem; }
 .search input { padding-left: 36px; }
 .tb-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .proxy-control { margin-bottom: var(--gap); }
+.netproxy-native { margin-top: var(--gap); overflow: hidden; }
+.netproxy-native .native-note { margin: 0; padding: 10px 14px; border-bottom: 1px dashed var(--line-2); color: var(--fg-2); font-size: .8rem; }
+.netproxy-native iframe { display: block; width: 100%; height: min(720px, 75dvh); min-height: 480px; border: 0; background: var(--bg); }
 .groups { display: grid; gap: var(--gap); margin-bottom: var(--gap); }
 .group .ph { cursor: pointer; user-select: none; }
 .group .ph .chev { transition: transform .2s; color: var(--fg-2); }

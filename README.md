@@ -26,7 +26,7 @@ English · [简体中文](README.zh-CN.md)
 | --- | --- |
 | Overview | Live WAN throughput chart, signal (RSRP/SINR/band) with history, egress node and proxy chain, Tailscale reachability probe, monthly data usage, battery/CPU/memory/temperature gauges, connected clients |
 | Cellular | Live registration and data state, modem-reported serving/candidate cells, on-demand network scans, carrier components, automatic/manual PLMN selection with offline safety rollback |
-| Proxy | mihomo or embedded NetProxy groups and nodes, complete start/stop/restart and boot policy, subscriptions with scheduling/history, node selection and batch latency tests, rule/ad-block/global/direct modes, TUN/eBPF and app/root policy, live connections and traffic totals |
+| Proxy | mihomo or embedded NetProxy groups and nodes, complete start/stop/restart and boot policy, subscriptions with scheduling/history, node selection and batch latency tests, rule/ad-block/global/direct modes, TUN/eBPF and app/root policy, live connections and traffic totals, plus the upstream NetProxy terminal through an authenticated netproxyctl-only bridge |
 | Device | Android-managed hotspot and USB tethering with separate runtime/boot controls, AP Turbo status, fixed `192.168.88.1` management address, SSID/password and Wi-Fi 6/32-client tuning, connected devices, HTTPS & app install guide, reboot, clock sync, console password, theme/language |
 | Logs | mihomo, Box for Root, Glovebox and Android logcat — level filter, grep with highlight, follow/pause, wrap |
 

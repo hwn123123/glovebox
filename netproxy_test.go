@@ -47,3 +47,35 @@ func TestValidPackageRefs(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitNetproxyCommand(t *testing.T) {
+	got, err := splitNetproxyCommand(`'/data/adb/modules/netproxy/netproxyctl' '--json' '--timeout' '30s' 'node' 'show' 'default'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/data/adb/modules/netproxy/netproxyctl", "--json", "--timeout", "30s", "node", "show", "default"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("command words = %#v, want %#v", got, want)
+	}
+	if err := validateNetproxyTerminalArgs(got[1:]); err != nil {
+		t.Fatalf("valid NetProxy command rejected: %v", err)
+	}
+}
+
+func TestNetproxyTerminalRejectsShell(t *testing.T) {
+	for _, command := range []string{
+		`id`,
+		`'/system/bin/sh' '-c' 'id'`,
+		`'/data/adb/modules/netproxy/netproxyctl' '--bad-option' 'service' 'status'`,
+		`'/data/adb/modules/netproxy/netproxyctl' '__internal' 'boot'`,
+		"'/data/adb/modules/netproxy/netproxyctl' 'service' 'status'; 'id'",
+	} {
+		words, err := splitNetproxyCommand(command)
+		if err == nil {
+			err = validateNetproxyTerminalArgs(words[1:])
+		}
+		if err == nil {
+			t.Fatalf("unsafe command accepted: %s", command)
+		}
+	}
+}

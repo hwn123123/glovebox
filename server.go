@@ -179,6 +179,7 @@ func (s *server) routes() http.Handler {
 	authed("POST /api/proxies/service", s.handleNetProxyService)
 	authed("POST /api/proxies/autostart", s.handleNetProxyAutostart)
 	authed("POST /api/proxies/settings", s.handleNetProxySettings)
+	authed("POST /api/proxies/terminal", s.handleNetProxyTerminal)
 	authed("GET /api/connections", s.handleConnections)
 	authed("POST /api/tailscale/check", s.handleTSCheck)
 	authed("GET /api/clients", s.handleClients)
@@ -198,7 +199,7 @@ func (s *server) routes() http.Handler {
 }
 
 const csp = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; " +
-	"connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+	"connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'"
 
 // guard only lets the hotspot subnet and localhost in. Non-GET requests must carry the
 // X-Glovebox header, which cross-site pages cannot set without a CORS preflight (CSRF protection).
@@ -220,7 +221,7 @@ func (s *server) guard(next http.Handler) http.Handler {
 		}
 		w.Header().Set("Content-Security-Policy", csp)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})

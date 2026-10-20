@@ -751,6 +751,7 @@ async function loadProxies(first) {
 function renderProxies(force) {
   const d = S.proxies;
   if (!d) return;
+  $('#netproxy-native').hidden = S.status?.platform !== 'xiaomi';
   const groups = Array.isArray(d.groups) ? d.groups : [];
   const populatedGroups = groups.filter((g) => (Array.isArray(g.nodes) && g.nodes.length) || g.now);
   const proxyRunning = d.running !== false;

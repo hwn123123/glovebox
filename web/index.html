@@ -285,6 +285,11 @@
         <header class="ph"><span class="pi">◇</span><h2>PROVIDERS</h2><span class="sub" data-i18n="p.providers">subscriptions &amp; rule sets</span><div class="pa"><button class="btn sm pri" id="btn-sub-add" data-i18n="proxy.addSub">Add subscription</button></div></header>
         <div class="pb flush"><div class="table-wrap" id="providers"></div></div>
       </article>
+      <article class="panel netproxy-native" id="netproxy-native" hidden>
+        <header class="ph"><span class="pi">&gt;_</span><h2>NETPROXY</h2><span class="sub" data-i18n="proxy.nativeConsole">upstream advanced console</span></header>
+        <p class="native-note" data-i18n="proxy.nativeHint">Direct upstream netproxyctl access with arbitrary root shell deliberately disabled.</p>
+        <iframe src="/netproxy/" loading="lazy" title="NetProxy Terminal"></iframe>
+      </article>
     </section>
 
     <!-- ============ device ============ -->

@@ -2,8 +2,10 @@
 
 This directory contains the runtime subset of NetProxy v8.6.1 used by
 Glovebox: `netproxyctl`, sing-box, default configuration, and rule data. The
-NetProxy APK and both upstream web interfaces are deliberately omitted because
-Glovebox is the management interface for this package.
+upstream NetProxy terminal is vendored under `web/netproxy` and connected to
+the embedded runtime through Glovebox's authenticated, netproxyctl-only HTTP
+bridge. The NetProxy APK and separate sing-box dashboard are omitted because
+Glovebox remains the single management interface for this package.
 
 NetProxy is licensed under GNU GPL v3. The complete corresponding source for
 this binary release starts from upstream commit

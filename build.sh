@@ -75,7 +75,9 @@ if [[ -z ${NO_OVERLAY:-} ]]; then
   fi
 fi
 
-sed -i.bak -e "s/^version=.*/version=$ver/" -e "s/^versionCode=.*/versionCode=$(date +%y%m%d%H)/" "$stage/module.prop"
+# Epoch seconds stay within signed 32-bit range until 2038 and remain unique
+# across multiple release builds made during the same hour.
+sed -i.bak -e "s/^version=.*/version=$ver/" -e "s/^versionCode=.*/versionCode=$(date +%s)/" "$stage/module.prop"
 rm -f "$stage/module.prop.bak"
 chmod 755 "$stage/bin/glovebox" "$stage/service.sh"
 

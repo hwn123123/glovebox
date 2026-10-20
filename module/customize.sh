@@ -19,6 +19,19 @@ if [ -d "$LIVE_PROXY/config" ] && [ "$LIVE_PROXY" != "$MODPATH/netproxy" ]; then
   cp -R "$LIVE_PROXY/data" "$MODPATH/netproxy/data"
   [ ! -d "$LIVE_PROXY/logs" ] || cp -R "$LIVE_PROXY/logs" "$MODPATH/netproxy/logs"
 fi
+
+# Magisk installs upgrades into modules_update before swapping directories. Keep
+# durable router policy and hardware identity from the live Glovebox module;
+# PID files and runtime snapshots are intentionally regenerated after reboot.
+LIVE_MODULE=/data/adb/modules/glovebox
+if [ -d "$LIVE_MODULE" ] && [ "$LIVE_MODULE" != "$MODPATH" ]; then
+  [ ! -f "$LIVE_MODULE/turbo_status" ] || cp -f "$LIVE_MODULE/turbo_status" "$MODPATH/turbo_status"
+  mkdir -p "$MODPATH/state"
+  for f in auto_hotspot auto_usb router_bssid softap_config.backup settings.backup usb_functions daemon.log service.log; do
+    [ ! -f "$LIVE_MODULE/state/$f" ] || cp -f "$LIVE_MODULE/state/$f" "$MODPATH/state/$f"
+  done
+fi
+[ ! -d "$MODPATH/state" ] || set_perm_recursive "$MODPATH/state" 0 0 0770 0660
 [ -f "$MODPATH/netproxy/bin/netproxyctl" ] && set_perm "$MODPATH/netproxy/bin/netproxyctl" 0 0 0755
 [ -f "$MODPATH/netproxy/bin/sing-box" ] && set_perm "$MODPATH/netproxy/bin/sing-box" 0 0 0755
 [ -f "$MODPATH/netproxy/bin/android-platform.dex" ] && set_perm "$MODPATH/netproxy/bin/android-platform.dex" 0 0 0644
